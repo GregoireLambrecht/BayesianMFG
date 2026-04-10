@@ -629,11 +629,16 @@ def learn_fictitious_policy(env, rho0, list_fictitious, n_iterations, batch_size
 
     # 1. Initialize the single learner policy
     learner = PolicyNN(env, key=model_key)
-    if scheduler:
-        lr_schedule = get_scheduler(max_lr=lr, total_steps=n_iterations)
-        optimizer = optax.adam(learning_rate=lr_schedule) 
-    else:
-        optimizer = optax.adam(lr)
+    lr_scheduler = optax.cosine_decay_schedule(
+        init_value=lr, 
+        decay_steps=n_iterations, 
+        alpha=1e-2  # Final LR will be 1% of the initial LR (e.g., 1e-4 -> 1e-6)
+    )
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(learning_rate=lr_scheduler)
+    )
+    # optimizer = optax.adam(lr)
     
     opt_state = optimizer.init(eqx.filter(learner, eqx.is_array))
 

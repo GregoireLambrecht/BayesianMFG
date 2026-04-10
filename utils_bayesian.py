@@ -423,7 +423,7 @@ def learn_fictitious_policy_bayesian(
     lr_scheduler = optax.cosine_decay_schedule(
         init_value=lr, 
         decay_steps=n_iterations, 
-        alpha=1e-3  # Final LR will be 1% of the initial LR (e.g., 1e-4 -> 1e-6)
+        alpha=1e-2  # Final LR will be 1% of the initial LR (e.g., 1e-4 -> 1e-6)
     )
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
@@ -468,10 +468,10 @@ def learn_fictitious_policy_bayesian(
         
         # Sample theta, noise, and setup batch
         k1, k2, k3 = jax.random.split(current_key, 3)
-        # theta_batch = generate_theta(k1, batch_size)
+        theta_batch = generate_theta(k1, batch_size)
 
-        theta = generate_theta(k1, 1).reshape(-1) 
-        theta_batch = jnp.tile(theta, (batch_size, 1))
+        # theta = generate_theta(k1, 1).reshape(-1) 
+        # theta_batch = jnp.tile(theta, (batch_size, 1))
 
         eps0_batch = env.common_noise(k2, (batch_size, env.H)) 
         r0_batch = jnp.tile(rho0, (batch_size, 1))
@@ -1149,7 +1149,7 @@ def first_experiment(config, seed):
     bar_threshold=1
     )
 
-    generate_theta = lambda k,b : generate_uniform(k, b, theta_dim = 1, low = 0, high = config['theta_high'])
+    generate_theta = lambda k,b : generate_uniform(k, b, theta_dim = 1, low = config['theta_low'], high = config['theta_high'])
 
     pi0_bays = BayesianPolicyNN(env_Theta, key = k_pi0_bays)
     ficititious_ensemble_bays, nash_gaps_fic_bays = run_fictitious_play_recursive_bayesian(env_Theta,
@@ -1203,7 +1203,7 @@ def first_experiment(config, seed):
 
     # Modification: Dictionary for eval_results
     eval_results = {}
-    for theta_true in jnp.linspace(0, config['theta_high'], 5):
+    for theta_true in jnp.linspace(0, 2, 5):
         theta_key = float(theta_true)
         theta_data = {}
         env_true = env_Theta.set_theta(jnp.array([theta_true]))
@@ -1237,7 +1237,7 @@ def first_experiment(config, seed):
         for N in [1, 10, 100]:
             n_data = {}
             samples = sample_rho(env_true,rho0,pi_nash_theta, k_samples, N)
-            thetas_grid = jnp.linspace(0, config['theta_high'], 500).reshape(-1, 1)
+            thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
             log_like, likelihood, theta_map = compute_likelihood_uniform_prior(thetas_grid, samples, model_flow)
             #SAVE log_like, theta_map
             n_data['log_like'] = log_like
