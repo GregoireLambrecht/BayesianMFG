@@ -133,12 +133,13 @@ LARGE = {
     'NB_STATES': 21,
     'H': 50,
     'eta': 0.1,
-    'theta_high': 2.0,      # Max theta for uniform sampling
+    'theta_high': 2.5,      # Max theta for uniform sampling
+    'theta_low': -0.5,
     
     # Fictitious Play (Bayesian)
     'K_bays': 20,            # Only 2 rounds of FP
     'epochs_fic_bays': 30000,  # 10 gradient steps per round
-    'batch_size_fic_bays': 200,
+    'batch_size_fic_bays': 500,
     'lr_fic_bays': 1e-4,
 
     'size_mc' : 10000,
@@ -156,8 +157,8 @@ LARGE = {
     
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 15,
-    'epochs_fic': 2000,
-    'batch_size_fic': 200,
+    'epochs_fic': 8000,
+    'batch_size_fic': 500,
     'lr_fic': 1e-4,
     
     # Nash Policy Learning (Deterministic)
