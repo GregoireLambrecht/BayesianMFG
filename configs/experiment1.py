@@ -95,7 +95,7 @@ SMALL = {
     # Fictitious Play (Bayesian)
     'K_bays': 20,            # Only 2 rounds of FP
     'epochs_fic_bays': 30000,  # 10 gradient steps per round
-    'batch_size_fic_bays': 200,
+    'batch_size_fic_bays': 500,
     'lr_fic_bays': 1e-4,
 
     'size_mc' : 10000,
@@ -113,8 +113,8 @@ SMALL = {
     
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 15,
-    'epochs_fic': 2000,
-    'batch_size_fic': 200,
+    'epochs_fic': 8000,
+    'batch_size_fic': 500,
     'lr_fic': 1e-4,
     
     # Nash Policy Learning (Deterministic)

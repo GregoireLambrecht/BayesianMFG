@@ -165,8 +165,17 @@ def train_best_response_fictitious_bayesian(
     # 1. Learner uses the Augmented State (Physical + Theta)
     # env.theta_dim is the dimension of the parameter vector theta
     model = BayesianPolicyNN(env, theta_dim=env.theta_dim, key=model_key)
-    optimizer = optax.adam(lr)
+    # optimizer = optax.adam(lr)
+    lr_scheduler = optax.cosine_decay_schedule(
+        init_value=lr, 
+        decay_steps=n_iterations, 
+        alpha=1e-2  # Final LR will be 0.2% of the initial LR (e.g., 1e-4 -> 1e-6)
+    )
+    optimizer = optax.chain(
+        optax.adam(learning_rate=lr_scheduler)
+    )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    
 
     # 2. History Pre-processing
     # These are PolicyNN instances (only physical state)
