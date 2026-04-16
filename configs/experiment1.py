@@ -93,10 +93,10 @@ SMALL = {
     'theta_high': 2.5,      # Max theta for uniform sampling
     
     # Fictitious Play (Bayesian)
-    'K_bays': 20,            # Only 2 rounds of FP
-    'epochs_fic_bays': 10000,  # 10 gradient steps per round
+    'K_bays': 20,            
+    'epochs_fic_bays': 15000,  
     'batch_size_fic_bays': 1024,
-    'lr_fic_bays': 1e-4,
+    'lr_fic_bays': 5e-4,
 
     'size_mc' : 10000,
     'nb_batch_mc': 100,
@@ -113,9 +113,9 @@ SMALL = {
     
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 20,
-    'epochs_fic': 4000,
+    'epochs_fic': 10000,
     'batch_size_fic': 1024,
-    'lr_fic': 1e-4,
+    'lr_fic': 5e-4,
     
     # Nash Policy Learning (Deterministic)
     'epochs_nash': 100_000,
