@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import distrax
+import time
 
 from jax.scipy.special import logsumexp
 
@@ -1546,215 +1547,6 @@ def ensemble_log_prob(models, rho_flat, thetas_grid):
     theta_MAP = thetas_grid[map_idx]
     return log_like, theta_MAP
 
-
-def first_experiment(config, seed):
-    config['seed'] = seed
-    # Setup Saving Path
-    folder = config['folder_name']
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-    file_path = os.path.join(folder, f"eta={config['eta']}_seed={config['seed']}.pkl")
-    
-    # Storage dictionary
-    results = {"config": config}
-
-    KEY = jax.random.PRNGKey(config['seed'])
-    k_pi0_bays, k_fic_bays, k_nash_bays, k_br_nash_bays, k_flow, k_train_flow, k_pi0, k_fic, k_nash,k_br_nash_theta, k_samples, k_br_map,k_gap_map, k_rew_map, k_br_bma, k_gap_bma, k_rew_bma = jax.random.split(KEY, 17)
-
-    rho0 = jnp.ones(config['NB_STATES'])/config['NB_STATES']
-    env_Theta = BeachBarEnv(
-    generate_common_noise=vector_torus_uniform_displaced,
-    rho0=rho0,
-    nb_states=config['NB_STATES'],
-    H=config['H'],
-    eta=config['eta'],
-    alpha_cong=1,
-    alpha_dist= 1/config['NB_STATES'],
-    bar_threshold=1
-    )
-
-    generate_theta = lambda k,b : generate_uniform(k, b, theta_dim = 1, low = config['theta_low'], high = config['theta_high'])
-
-    pi0_bays = BayesianPolicyNN(env_Theta, key = k_pi0_bays)
-    ficititious_ensemble_bays, nash_gaps_fic_bays = run_fictitious_play_recursive_bayesian(env_Theta,
-                                                                                        K_steps= config['K_bays'],initial_policy= pi0_bays,
-                                                                                        rho0 = rho0,
-                                                                                        generate_theta = generate_theta,
-                                                                                        n_train_iters=config['epochs_fic_bays'],
-                                                                                        batch_size_train=config['batch_size_fic_bays'],size_mc=config['size_mc'], #64
-                                                                                        nb_batch_mc=config['nb_batch_mc'],
-                                                                                        lr =config['lr_fic_bays'],
-                                                                                        plot_report=False, 
-                                                                                        key = k_fic_bays
-                                                                                        )
-    #SAVE nash_gaps_fic_bays
-    results['nash_gaps_fic_bays'] = nash_gaps_fic_bays
-
-    pi_nash_bays, loss_nash_bays = learn_fictitious_policy_bayesian(env_Theta, rho0, ficititious_ensemble_bays,generate_theta,
-                                                                    config['epochs_nash_bays'], config['batch_size_nash_bays'], config['lr_nash_bays'], 
-                                                                    k_nash_bays)
-    
-    #SAVE loss_nash_bays
-    results['loss_nash_bays'] = loss_nash_bays
-    
-    gap_nash_bays, _ = compute_single_policy_exploitability_bayesian(env_Theta, rho0, pi_nash_bays, generate_theta, 
-                                                                  n_iterations=config['epochs_fic_bays'], 
-                                                                  mc_size= config['size_mc'], nb_batch_mc=config['nb_batch_mc'], 
-                                                                  lr = config['lr_fic_bays'], batch_size=config['batch_size_fic_bays'], 
-                                                                  key = k_br_nash_bays)
-    results['gap_nash_bays'] = gap_nash_bays
-
-    # Modification: Dictionary for eval_results
-    eval_results = {}
-    pi_nash_theta_dic = {}
-    for theta_true in jnp.linspace(0.5, 2, 5):
-        theta_key = float(theta_true)
-        theta_data = {}
-        env_true = env_Theta.set_theta(jnp.array([theta_true]))
-        pi0  = PolicyNN(env_true, key=k_pi0)
-
-        fictitious_ensemble_theta, nash_gaps_fic_theta = run_fictitious_play_recursive(env_true, config['K'], pi0,rho0,
-                                                                       n_train_iters=config['epochs_fic'],
-                                                                       batch_size_train=config['batch_size_fic'],
-                                                                       size_mc=config['size_mc'], nb_batch_mc=config['nb_batch_mc'],
-                                                                       lr = config['lr_fic'],
-                                                                       plot_report=False, 
-                                                                       key = k_fic
-                                                                       )
-        #SAVE nash_gaps_fic_theta
-        theta_data['nash_gaps_fic_theta'] = nash_gaps_fic_theta
-
-        pi_nash_theta, loss_nash_theta = learn_fictitious_policy(env_true, rho0, fictitious_ensemble_theta, 
-                                                                 config['epochs_nash'], config['batch_size_nash'], config['lr_nash'], 
-                                                                 key = k_nash)
-        pi_nash_theta_dic[theta_true] = pi_nash_theta
-        #SAVE loss_nash_theta
-        theta_data['loss_nash_theta'] = loss_nash_theta
-
-        gap_nash_theta, _ = compute_single_policy_exploitability(env_true, rho0, pi_nash_theta,
-                                                                  n_iterations=config['epochs_fic'], 
-                                                                  mc_size= config['size_mc'], nb_batch_mc=config['nb_batch_mc'], 
-                                                                  lr = config['lr_fic'], batch_size=config['batch_size_fic'], 
-                                                                  key = k_br_nash_theta)
-        theta_data['gap_nash_theta'] = gap_nash_theta
-
-    n_samples_data = {}
-
-    list_indices = [jnp.arange(config['H']-1, 0, -1)[::-1], jnp.arange(config['H']-1, 0, -2, )[::-1], jnp.arange(config['H']-1, 0, -4)[::-1], [config['H'] - 1]]
-
-    use_mu = {'rho': False, 'mu':True }
-    for obs in use_mu: 
-        for indices_I in list_indices:
-            num_models = 5
-            ensemble_keys = jax.random.split(k_flow, num_models)
-            ensemble_flows = []
-            ensemble_flows_losses = []
-
-            for i in range(num_models):
-                print(f"--- Training Model {i+1}/{num_models} ---")
-                
-                # Initialize a new model
-                m_key, train_key = jax.random.split(ensemble_keys[i])
-                model = ConditionalMAF(
-                    event_dim=len(indices_I)*config(['NB_STATES']), 
-                    context_dim=1, 
-                    hidden_dim=256, 
-                    num_layers=5, 
-                    key=m_key
-                )
-                
-                # Train (using your existing online training function)
-                trained_model, losses = train_nle_online(env_Theta,
-                model=model,
-                rho0=rho0, 
-                generate_theta=generate_theta,
-                pi=pi_nash_bays,
-                indices_I=indices_I,
-                use_mu=use_mu[obs],
-                n_steps=config['epochs_flow'],
-                lr=config['lr_flow'],
-                batch_size=config['batch_size_flow'],
-                key=train_key
-                )
-
-                ensemble_flows.append(trained_model)
-                ensemble_flows_losses.append(losses)
-
-                #SAVE loss_flow
-                results['loss_flow'] = ensemble_flows_losses
-
-            for N in [1, 10, 100]:
-                n_data = {}
-                if use_mu[obs]:
-                    samples = sample_mu(env_true,rho0,pi_nash_theta, k_samples, N)
-                else :
-                    samples = sample_mu(env_true,rho0,pi_nash_theta, k_samples, N)
-
-                samples = samples.reshape(samples.shape[0], -1, env_Theta.nb_states)
-                samples = samples[:, indices_I, :]
-                samples = samples.reshape(samples.shape[0], -1)
-
-                thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
-                log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
-                likelihood = jnp.exp(log_like)
-
-                #SAVE log_like, theta_map
-                n_data['log_like'] = log_like
-                n_data['theta_map'] = theta_MAP
-
-                br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
-                env_true, rho0, pi_nash_bays, theta_MAP, 
-                n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
-                key=k_br_map
-                )
-
-                gap_map, rew_map = compute_exploitability_bayesian_fixed_theta(env_true, rho0, pi_nash_bays, br_to_map, theta_MAP, 
-                                                                                        k_gap_map,
-                                                                                        config['size_mc'], config['nb_batch_mc'])
-                #SAVE gap_map, rew_map
-                n_data['gap_map'] = gap_map
-                n_data['rew_map'] = rew_map
-
-                rew_map_vs_nash_true, rew_det_true_map = compute_reward_bays_theta_fixed_vs_determinist(env_true, rho0, pi_nash_bays, pi_nash_theta, theta_MAP, 
-                                                                                        config['size_mc'], config['nb_batch_mc'], 
-                                                                                        key = k_rew_map)
-                #SAVE rew_map_vs_nash_true, rew_det_true_map
-                n_data['rew_map_vs_nash_true'] = rew_map_vs_nash_true
-                n_data['rew_det_true_map'] = rew_det_true_map
-
-                br_to_bma, _ = train_best_response_vs_bma(
-                env_true, rho0, pi_nash_bays, thetas_grid, likelihood,
-                n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
-                key=k_br_bma
-                )
-                
-                gap_bma, rew_bma = compute_exploitability_bma(env_true, rho0, pi_nash_bays, br_to_bma, thetas_grid, likelihood, 
-                                                                                        k_gap_bma,
-                                                                                        config['size_mc'], config['nb_batch_mc'])
-                #SAVE gap_bma, rew_bma
-                n_data['gap_bma'] = gap_bma
-                n_data['rew_bma'] = rew_bma
-
-                rew_bma_vs_nash_true, rew_det_true_bma = compute_reward_bma_vs_deterministic(env_true, rho0, pi_nash_bays, pi_nash_theta, thetas_grid, likelihood, 
-                                                                                            key = k_rew_bma,
-                                                                                            mc_size=config['size_mc'], nb_batch_mc= config['nb_batch_mc'], 
-                                                                                            )
-                #SAVE rew_bma_vs_nash_true, rew_det_true_bma
-                n_data['rew_bma_vs_nash_true'] = rew_bma_vs_nash_true
-                n_data['rew_det_true_bma'] = rew_det_true_bma
-                
-                n_samples_data[N] = n_data # Dict by N
-            
-            theta_data['n_samples_evals'] = n_samples_data
-            eval_results[theta_key] = theta_data # Dict by theta
-
-            results['evaluations'] = eval_results
-    
-    with open(file_path, 'wb') as f:
-        pickle.dump(results, f)
-
-
-
 def first_experiment(config, seed):
     config['seed'] = seed
     folder = config['folder_name']
@@ -1782,6 +1574,8 @@ def first_experiment(config, seed):
     generate_theta = lambda k, b: generate_uniform(k, b, theta_dim=1, low=config['theta_low'], high=config['theta_high'])
 
     # ── Bayesian Fictitious Play ──────────────────────────────────────────────
+    print(f"[seed={seed}] Starting Bayesian Fictitious Play (K={config['K_bays']} rounds)...")
+    t0 = time.time()
     pi0_bays = BayesianPolicyNN(env_Theta, key=k_pi0_bays)
     fictitious_ensemble_bays, nash_gaps_fic_bays = run_fictitious_play_recursive_bayesian(
         env_Theta,
@@ -1793,14 +1587,20 @@ def first_experiment(config, seed):
         lr=config['lr_fic_bays'], plot_report=False, key=k_fic_bays
     )
     results['nash_gaps_fic_bays'] = nash_gaps_fic_bays
+    print(f"[seed={seed}] Bayesian FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_bays}")
 
+    print(f"[seed={seed}] Compressing Bayesian Nash policy ({config['epochs_nash_bays']} steps)...")
+    t0 = time.time()
     pi_nash_bays, loss_nash_bays = learn_fictitious_policy_bayesian(
         env_Theta, rho0, fictitious_ensemble_bays, generate_theta,
         config['epochs_nash_bays'], config['batch_size_nash_bays'], config['lr_nash_bays'],
         k_nash_bays
     )
     results['loss_nash_bays'] = loss_nash_bays
+    print(f"[seed={seed}] Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_bays[-1]:.4f}")
 
+    print(f"[seed={seed}] Computing Bayesian exploitability...")
+    t0 = time.time()
     gap_nash_bays, _ = compute_single_policy_exploitability_bayesian(
         env_Theta, rho0, pi_nash_bays, generate_theta,
         n_iterations=config['epochs_fic_bays'],
@@ -1809,16 +1609,20 @@ def first_experiment(config, seed):
         key=k_br_nash_bays
     )
     results['gap_nash_bays'] = gap_nash_bays
+    print(f"[seed={seed}] Bayesian exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_bays:.6f}")
 
     # ── Deterministic Nash per theta ──────────────────────────────────────────
     pi_nash_theta_dic = {}
     det_results = {}
-    for theta_true in jnp.linspace(0.5, 2, 5):
+    print(f"\n[seed={seed}] Starting deterministic Nash for {5} thetas...")
+    for idx, theta_true in enumerate(jnp.linspace(0.5, 2, 5)):
         theta_key = float(theta_true)
         theta_data = {}
+        print(f"[seed={seed}]   theta {idx+1}/5 = {theta_key:.3f}")
         env_true = env_Theta.set_theta(jnp.array([theta_true]))
         pi0 = PolicyNN(env_true, key=k_pi0)
 
+        t0 = time.time()
         fictitious_ensemble_theta, nash_gaps_fic_theta = run_fictitious_play_recursive(
             env_true, config['K'], pi0, rho0,
             n_train_iters=config['epochs_fic'],
@@ -1827,7 +1631,9 @@ def first_experiment(config, seed):
             lr=config['lr_fic'], plot_report=False, key=k_fic
         )
         theta_data['nash_gaps_fic_theta'] = nash_gaps_fic_theta
+        print(f"[seed={seed}]     FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_theta}")
 
+        t0 = time.time()
         pi_nash_theta, loss_nash_theta = learn_fictitious_policy(
             env_true, rho0, fictitious_ensemble_theta,
             config['epochs_nash'], config['batch_size_nash'], config['lr_nash'],
@@ -1835,7 +1641,9 @@ def first_experiment(config, seed):
         )
         pi_nash_theta_dic[theta_key] = pi_nash_theta
         theta_data['loss_nash_theta'] = loss_nash_theta
+        print(f"[seed={seed}]     Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_theta[-1]:.4f}")
 
+        t0 = time.time()
         gap_nash_theta, _ = compute_single_policy_exploitability(
             env_true, rho0, pi_nash_theta,
             n_iterations=config['epochs_fic'],
@@ -1845,35 +1653,39 @@ def first_experiment(config, seed):
         )
         theta_data['gap_nash_theta'] = gap_nash_theta
         det_results[theta_key] = theta_data
+        print(f"[seed={seed}]     Exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_theta:.6f}")
 
     results['det_results'] = det_results
+    print(f"[seed={seed}] All deterministic Nash done.")
 
     # ── Flow ensemble × obs type × indices ───────────────────────────────────
     list_indices = [
-        list(range(1, config['H'])),                    # all timesteps
-        list(range(1, config['H'], 2)) + [config['H']-1],                 # every 2
-        list(range(3, config['H'], 4)) + [config['H']-1],                 # every 4
-        [config['H'] - 1],                              # last only
+        list(range(1, config['H'])),
+        list(range(1, config['H'], 2)) + [config['H']-1],
+        list(range(3, config['H'], 4)) + [config['H']-1],
+        [config['H'] - 1],
     ]
     use_mu_map = {'rho': False, 'mu': True}
+    flow_results = {}
 
-    flow_results = {}   # keyed by (obs, indices_key)
+    total_combos = len(use_mu_map) * len(list_indices)
+    combo_idx = 0
 
     for obs, do_mu in use_mu_map.items():
         for indices_I in list_indices:
+            combo_idx += 1
             indices_key = str(indices_I)
-            print(f"\n=== obs={obs}, indices={indices_I} ===")
+            event_dim = len(indices_I) * config['NB_STATES']
+            print(f"\n[seed={seed}] === Combo {combo_idx}/{total_combos}: obs={obs}, |I|={len(indices_I)}, event_dim={event_dim} ===")
 
-            event_dim = len(indices_I) * config['NB_STATES']  
-
-            # Train ensemble of flows
             num_models = 5
             ensemble_keys = jax.random.split(k_flow, num_models)
             ensemble_flows = []
             ensemble_flows_losses = []
 
             for i in range(num_models):
-                print(f"  Flow {i+1}/{num_models}")
+                print(f"[seed={seed}]   Training flow {i+1}/{num_models}...")
+                t0 = time.time()
                 m_key, train_key = jax.random.split(ensemble_keys[i])
                 model = ConditionalMAF(
                     event_dim=event_dim,
@@ -1897,25 +1709,26 @@ def first_experiment(config, seed):
                 )
                 ensemble_flows.append(trained_model)
                 ensemble_flows_losses.append(losses)
+                print(f"[seed={seed}]   Flow {i+1} done in {time.time()-t0:.1f}s | Final loss: {losses[-1]:.4f}")
 
-            # Eval: per theta_true × N
             obs_indices_results = {}
-            for theta_true in jnp.linspace(0.5, 2, 5):
+            for idx, theta_true in enumerate(jnp.linspace(0.5, 2, 5)):
                 theta_key = float(theta_true)
                 env_true = env_Theta.set_theta(jnp.array([theta_true]))
-                pi_nash_theta = pi_nash_theta_dic[theta_key]   # ← from pre-computed dict
+                pi_nash_theta = pi_nash_theta_dic[theta_key]
+                print(f"[seed={seed}]   Evaluating theta {idx+1}/5 = {theta_key:.3f}")
 
                 n_samples_data = {}
                 for N in [1, 10, 100]:
+                    print(f"[seed={seed}]     N={N}...")
+                    t0 = time.time()
                     n_data = {}
 
-                    # Sample observations — branch on obs type
                     if do_mu:
                         samples = sample_mu(env_true, rho0, pi_nash_theta, k_samples, N)
                     else:
                         samples = sample_rho(env_true, rho0, pi_nash_theta, k_samples, N)
 
-                    # Slice to selected indices
                     samples = samples.reshape(N, -1, env_Theta.nb_states)
                     samples = samples[:, indices_I, :]
                     samples = samples.reshape(N, -1)
@@ -1923,9 +1736,9 @@ def first_experiment(config, seed):
                     thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
                     log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
                     likelihood = jnp.exp(log_like)
-
                     n_data['log_like']  = log_like
                     n_data['theta_map'] = theta_MAP
+                    print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})")
 
                     br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
                         env_true, rho0, pi_nash_bays, theta_MAP,
@@ -1966,17 +1779,20 @@ def first_experiment(config, seed):
                     n_data['rew_det_true_bma']     = rew_det_true_bma
 
                     n_samples_data[N] = n_data
+                    print(f"[seed={seed}]     N={N} done in {time.time()-t0:.1f}s | gap_map={float(gap_map):.4f} | gap_bma={float(gap_bma):.4f}")
 
-                obs_indices_results[theta_key] = {
-                    'n_samples_evals': n_samples_data
-                }
+                obs_indices_results[theta_key] = {'n_samples_evals': n_samples_data}
 
             flow_results[(obs, indices_key)] = {
-                'losses':  ensemble_flows_losses,
-                'evals':   obs_indices_results,
+                'losses': ensemble_flows_losses,
+                'evals':  obs_indices_results,
             }
+            print(f"[seed={seed}] Combo {combo_idx}/{total_combos} done.")
 
     results['flow_results'] = flow_results
+    print(f"\n[seed={seed}] All done. Saving to {file_path}...")
 
     with open(file_path, 'wb') as f:
         pickle.dump(results, f)
+    
+    print(f"[seed={seed}] Saved.")
