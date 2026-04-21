@@ -1547,6 +1547,8 @@ def ensemble_log_prob(models, rho_flat, thetas_grid):
     theta_MAP = thetas_grid[map_idx]
     return log_like, theta_MAP
 
+
+
 def first_experiment(config, seed):
     config['seed'] = seed
     folder = config['folder_name']
@@ -1574,7 +1576,7 @@ def first_experiment(config, seed):
     generate_theta = lambda k, b: generate_uniform(k, b, theta_dim=1, low=config['theta_low'], high=config['theta_high'])
 
     # ── Bayesian Fictitious Play ──────────────────────────────────────────────
-    print(f"[seed={seed}] Starting Bayesian Fictitious Play (K={config['K_bays']} rounds)...")
+    print(f"[seed={seed}] Starting Bayesian Fictitious Play (K={config['K_bays']} rounds)...", flush=True)
     t0 = time.time()
     pi0_bays = BayesianPolicyNN(env_Theta, key=k_pi0_bays)
     fictitious_ensemble_bays, nash_gaps_fic_bays = run_fictitious_play_recursive_bayesian(
@@ -1587,9 +1589,9 @@ def first_experiment(config, seed):
         lr=config['lr_fic_bays'], plot_report=False, key=k_fic_bays
     )
     results['nash_gaps_fic_bays'] = nash_gaps_fic_bays
-    print(f"[seed={seed}] Bayesian FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_bays}")
+    print(f"[seed={seed}] Bayesian FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_bays}", flush=True)
 
-    print(f"[seed={seed}] Compressing Bayesian Nash policy ({config['epochs_nash_bays']} steps)...")
+    print(f"[seed={seed}] Compressing Bayesian Nash policy ({config['epochs_nash_bays']} steps)...", flush=True)
     t0 = time.time()
     pi_nash_bays, loss_nash_bays = learn_fictitious_policy_bayesian(
         env_Theta, rho0, fictitious_ensemble_bays, generate_theta,
@@ -1597,9 +1599,9 @@ def first_experiment(config, seed):
         k_nash_bays
     )
     results['loss_nash_bays'] = loss_nash_bays
-    print(f"[seed={seed}] Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_bays[-1]:.4f}")
+    print(f"[seed={seed}] Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_bays[-1]:.4f}", flush=True)
 
-    print(f"[seed={seed}] Computing Bayesian exploitability...")
+    print(f"[seed={seed}] Computing Bayesian exploitability...", flush=True)
     t0 = time.time()
     gap_nash_bays, _ = compute_single_policy_exploitability_bayesian(
         env_Theta, rho0, pi_nash_bays, generate_theta,
@@ -1609,16 +1611,16 @@ def first_experiment(config, seed):
         key=k_br_nash_bays
     )
     results['gap_nash_bays'] = gap_nash_bays
-    print(f"[seed={seed}] Bayesian exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_bays:.6f}")
+    print(f"[seed={seed}] Bayesian exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_bays:.6f}", flush=True)
 
     # ── Deterministic Nash per theta ──────────────────────────────────────────
     pi_nash_theta_dic = {}
     det_results = {}
-    print(f"\n[seed={seed}] Starting deterministic Nash for {5} thetas...")
+    print(f"\n[seed={seed}] Starting deterministic Nash for {5} thetas...", flush=True)
     for idx, theta_true in enumerate(jnp.linspace(0.5, 2, 5)):
         theta_key = float(theta_true)
         theta_data = {}
-        print(f"[seed={seed}]   theta {idx+1}/5 = {theta_key:.3f}")
+        print(f"[seed={seed}]   theta {idx+1}/5 = {theta_key:.3f}", flush=True)
         env_true = env_Theta.set_theta(jnp.array([theta_true]))
         pi0 = PolicyNN(env_true, key=k_pi0)
 
@@ -1631,7 +1633,7 @@ def first_experiment(config, seed):
             lr=config['lr_fic'], plot_report=False, key=k_fic
         )
         theta_data['nash_gaps_fic_theta'] = nash_gaps_fic_theta
-        print(f"[seed={seed}]     FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_theta}")
+        print(f"[seed={seed}]     FP done in {time.time()-t0:.1f}s | Nash gaps: {nash_gaps_fic_theta}", flush=True)
 
         t0 = time.time()
         pi_nash_theta, loss_nash_theta = learn_fictitious_policy(
@@ -1641,7 +1643,7 @@ def first_experiment(config, seed):
         )
         pi_nash_theta_dic[theta_key] = pi_nash_theta
         theta_data['loss_nash_theta'] = loss_nash_theta
-        print(f"[seed={seed}]     Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_theta[-1]:.4f}")
+        print(f"[seed={seed}]     Nash compression done in {time.time()-t0:.1f}s | Final loss: {loss_nash_theta[-1]:.4f}", flush=True)
 
         t0 = time.time()
         gap_nash_theta, _ = compute_single_policy_exploitability(
@@ -1653,10 +1655,10 @@ def first_experiment(config, seed):
         )
         theta_data['gap_nash_theta'] = gap_nash_theta
         det_results[theta_key] = theta_data
-        print(f"[seed={seed}]     Exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_theta:.6f}")
+        print(f"[seed={seed}]     Exploitability done in {time.time()-t0:.1f}s | Gap: {gap_nash_theta:.6f}", flush=True)
 
     results['det_results'] = det_results
-    print(f"[seed={seed}] All deterministic Nash done.")
+    print(f"[seed={seed}] All deterministic Nash done.", flush=True)
 
     # ── Flow ensemble × obs type × indices ───────────────────────────────────
     list_indices = [
@@ -1676,7 +1678,7 @@ def first_experiment(config, seed):
             combo_idx += 1
             indices_key = str(indices_I)
             event_dim = len(indices_I) * config['NB_STATES']
-            print(f"\n[seed={seed}] === Combo {combo_idx}/{total_combos}: obs={obs}, |I|={len(indices_I)}, event_dim={event_dim} ===")
+            print(f"\n[seed={seed}] === Combo {combo_idx}/{total_combos}: obs={obs}, |I|={len(indices_I)}, event_dim={event_dim} ===", flush=True)
 
             num_models = 5
             ensemble_keys = jax.random.split(k_flow, num_models)
@@ -1684,7 +1686,7 @@ def first_experiment(config, seed):
             ensemble_flows_losses = []
 
             for i in range(num_models):
-                print(f"[seed={seed}]   Training flow {i+1}/{num_models}...")
+                print(f"[seed={seed}]   Training flow {i+1}/{num_models}...", flush=True)
                 t0 = time.time()
                 m_key, train_key = jax.random.split(ensemble_keys[i])
                 model = ConditionalMAF(
@@ -1709,18 +1711,18 @@ def first_experiment(config, seed):
                 )
                 ensemble_flows.append(trained_model)
                 ensemble_flows_losses.append(losses)
-                print(f"[seed={seed}]   Flow {i+1} done in {time.time()-t0:.1f}s | Final loss: {losses[-1]:.4f}")
+                print(f"[seed={seed}]   Flow {i+1} done in {time.time()-t0:.1f}s | Final loss: {losses[-1]:.4f}", flush=True)
 
             obs_indices_results = {}
             for idx, theta_true in enumerate(jnp.linspace(0.5, 2, 5)):
                 theta_key = float(theta_true)
                 env_true = env_Theta.set_theta(jnp.array([theta_true]))
                 pi_nash_theta = pi_nash_theta_dic[theta_key]
-                print(f"[seed={seed}]   Evaluating theta {idx+1}/5 = {theta_key:.3f}")
+                print(f"[seed={seed}]   Evaluating theta {idx+1}/5 = {theta_key:.3f}", flush=True)
 
                 n_samples_data = {}
                 for N in [1, 10, 100]:
-                    print(f"[seed={seed}]     N={N}...")
+                    print(f"[seed={seed}]     N={N}...", flush=True)
                     t0 = time.time()
                     n_data = {}
 
@@ -1738,7 +1740,7 @@ def first_experiment(config, seed):
                     likelihood = jnp.exp(log_like)
                     n_data['log_like']  = log_like
                     n_data['theta_map'] = theta_MAP
-                    print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})")
+                    print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})", flush=True)
 
                     br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
                         env_true, rho0, pi_nash_bays, theta_MAP,
@@ -1779,7 +1781,7 @@ def first_experiment(config, seed):
                     n_data['rew_det_true_bma']     = rew_det_true_bma
 
                     n_samples_data[N] = n_data
-                    print(f"[seed={seed}]     N={N} done in {time.time()-t0:.1f}s | gap_map={float(gap_map):.4f} | gap_bma={float(gap_bma):.4f}")
+                    print(f"[seed={seed}]     N={N} done in {time.time()-t0:.1f}s | gap_map={float(gap_map):.4f} | gap_bma={float(gap_bma):.4f}", flush=True)
 
                 obs_indices_results[theta_key] = {'n_samples_evals': n_samples_data}
 
@@ -1787,12 +1789,16 @@ def first_experiment(config, seed):
                 'losses': ensemble_flows_losses,
                 'evals':  obs_indices_results,
             }
-            print(f"[seed={seed}] Combo {combo_idx}/{total_combos} done.")
+            print(f"[seed={seed}] Combo {combo_idx}/{total_combos} done.", flush=True)
 
     results['flow_results'] = flow_results
-    print(f"\n[seed={seed}] All done. Saving to {file_path}...")
+    print(f"\n[seed={seed}] All done. Saving to {file_path}...", flush=True)
 
     with open(file_path, 'wb') as f:
         pickle.dump(results, f)
     
-    print(f"[seed={seed}] Saved.")
+    print(f"[seed={seed}] Saved.", flush=True)
+
+
+
+
