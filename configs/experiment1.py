@@ -1,42 +1,43 @@
 TEST = {
     # Metadata & Paths
-    'folder_name': 'test_experiment_fast',
+    'folder_name': 'exp1_test',
     
     # Environment Dimensions
-    'NB_STATES': 5,
-    'H': 3,
-    'eta': 0.05,
-    'theta_high': 2.0,      # Max theta for uniform sampling
-    
-    # Fictitious Play (Bayesian)
-    'K_bays': 2,            # Only 2 rounds of FP
-    'epochs_fic_bays': 10,  # 10 gradient steps per round
-    'batch_size_fic_bays': 8,
-    'lr_fic_bays': 1e-3,
+    'NB_STATES': 7,
+    'H': 20,
+    'eta': 0.1,
+    'theta_low': 0,
+    'theta_high': 2.5,
 
-    'size_mc' : 100,
-    'nb_batch_mc': 1,
-    
+    # Fictitious Play (Bayesian)
+    'K_bays': 2,
+    'epochs_fic_bays': 100,
+    'batch_size_fic_bays': 16,
+    'lr_fic_bays': 5e-4,
+
+    'size_mc': 100,
+    'nb_batch_mc': 10,
+
     # Nash Policy Learning (Expert Compression)
-    'epochs_nash_bays': 10,
-    'batch_size_nash_bays': 8,
+    'epochs_nash_bays': 100,
+    'batch_size_nash_bays': 16,
     'lr_nash_bays': 1e-3,
-    
+
     # Normalizing Flow (NLE)
-    'epochs_flow': 10,
-    'batch_size_flow': 8,
+    'epochs_flow': 100,
+    'batch_size_flow': 16,
     'lr_flow': 1e-3,
-    
+
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 2,
-    'epochs_fic': 10,
-    'batch_size_fic': 8,
-    'lr_fic': 1e-3,
-    
+    'epochs_fic': 100,
+    'batch_size_fic': 16,
+    'lr_fic': 5e-4,
+
     # Nash Policy Learning (Deterministic)
-    'epochs_nash': 10,
-    'batch_size_nash': 8,
-    'lr_nash': 1e-3
+    'epochs_nash': 100,
+    'batch_size_nash': 16,
+    'lr_nash': 5e-4
 }
 
 
