@@ -81,46 +81,89 @@ TEST = {
 #     'lr_nash': 5e-3
 # }
 
+# SMALL = {
+#     # Metadata & Paths
+#     'folder_name': 'exp1_small',
+    
+#     # Environment Dimensions
+#     'NB_STATES': 7,
+#     'H': 10,
+#     'eta': 0.1,
+#     'theta_low':-0.5,
+#     'theta_high': 2.5,      # Max theta for uniform sampling
+    
+#     # Fictitious Play (Bayesian)
+#     'K_bays': 20,            
+#     'epochs_fic_bays': 15000,  
+#     'batch_size_fic_bays': 1024,
+#     'lr_fic_bays': 5e-4,
+
+#     'size_mc' : 10000,
+#     'nb_batch_mc': 100,
+    
+#     # Nash Policy Learning (Expert Compression)
+#     'epochs_nash_bays': 100_000,
+#     'batch_size_nash_bays': 200,
+#     'lr_nash_bays': 1e-3,
+    
+#     # Normalizing Flow (NLE)
+#     'epochs_flow': 20_000,
+#     'batch_size_flow': 500,
+#     'lr_flow': 5e-4,
+    
+#     # Standard Fictitious Play (Deterministic Baselines)
+#     'K': 20,
+#     'epochs_fic': 10000,
+#     'batch_size_fic': 1024,
+#     'lr_fic': 5e-4,
+    
+#     # Nash Policy Learning (Deterministic)
+#     'epochs_nash': 100_000,
+#     'batch_size_nash': 200,
+#     'lr_nash': 1e-4
+# }
+
+
 SMALL = {
     # Metadata & Paths
     'folder_name': 'exp1_small',
     
     # Environment Dimensions
     'NB_STATES': 7,
-    'H': 10,
+    'H': 20,
     'eta': 0.1,
-    'theta_low':-0.5,
+    'theta_low':0,
     'theta_high': 2.5,      # Max theta for uniform sampling
     
     # Fictitious Play (Bayesian)
-    'K_bays': 20,            
-    'epochs_fic_bays': 15000,  
-    'batch_size_fic_bays': 1024,
+    'K_bays': 10,            
+    'epochs_fic_bays': 8000,  
+    'batch_size_fic_bays': 128,
     'lr_fic_bays': 5e-4,
 
     'size_mc' : 10000,
     'nb_batch_mc': 100,
     
     # Nash Policy Learning (Expert Compression)
-    'epochs_nash_bays': 100_000,
-    'batch_size_nash_bays': 200,
+    'epochs_nash_bays': 50_000,
+    'batch_size_nash_bays': 128,
     'lr_nash_bays': 1e-3,
     
     # Normalizing Flow (NLE)
-    'epochs_flow': 20_000,
-    'batch_size_flow': 500,
-    'lr_flow': 5e-4,
+    'epochs_flow': 25_000,
+    'batch_size_flow': 128,
+    'lr_flow': 1e-3,
     
     # Standard Fictitious Play (Deterministic Baselines)
-    'K': 20,
-    'epochs_fic': 10000,
-    'batch_size_fic': 1024,
+    'K': 10,
+    'epochs_fic': 8000,
+    'batch_size_fic': 128,
     'lr_fic': 5e-4,
     
     # Nash Policy Learning (Deterministic)
-    'epochs_nash': 100_000,
-    'batch_size_nash': 200,
-    'lr_nash': 1e-4
+    'epochs_nash': 50_000,
+    'batch_size_nash': 128,
+    'lr_nash': 5e-4
 }
 
 

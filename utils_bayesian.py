@@ -76,78 +76,134 @@ from envs.common_noise_script import *
 #         # 3. Output Probabilities
 #         return jax.nn.softmax(logits)
 
+# class BayesianPolicyNN(eqx.Module):
+#     layers: list
+#     film_layers: list
+#     # --- ADD THESE FIELDS ---
+#     depth: int = eqx.static_field() 
+#     nb_states: int = eqx.static_field()
+#     vanilla: bool = eqx.static_field()
+#     activation: callable = eqx.static_field()
+#     output_layer: eqx.nn.Linear # Dedicated final layer
+
+#     def __init__(self, env, theta_dim=1, depth=3, vanilla=False, key=None):
+#         if key is None:
+#             raise ValueError("key must be provided.")
+        
+#         # Now these assignments will work
+#         self.depth = depth 
+#         self.nb_states = env.nb_states
+#         self.vanilla = vanilla
+#         self.activation = jax.nn.tanh
+        
+#         nb_actions = env.nb_actions
+#         hidden_dim = 64
+        
+#         input_dim = 1 + self.nb_states if vanilla else 1 + self.nb_states + self.nb_states
+        
+#         # We need depth keys for backbone, depth for FiLM, and 1 for output
+#         keys = jax.random.split(key, 2 * depth + 1) 
+        
+#         # 1. Main Policy Backbone (Hidden Layers)
+#         # Note: i=0 takes input_dim, others take hidden_dim
+#         self.layers = []
+#         for i in range(depth):
+#             in_d = input_dim if i == 0 else hidden_dim
+#             self.layers.append(eqx.nn.Linear(in_d, hidden_dim, key=keys[i]))
+        
+#         # 2. Output Layer (Separate from the FiLM loop)
+#         self.output_layer = eqx.nn.Linear(hidden_dim, nb_actions, key=keys[2 * depth])
+        
+#         # 3. FiLM Generators
+#         self.film_layers = [
+#             eqx.nn.Linear(theta_dim, hidden_dim * 2, key=keys[depth + i]) 
+#             for i in range(depth)
+#         ]
+
+#     def __call__(self, t, x, rho, theta):
+#         x_onehot = jax.nn.one_hot(x, self.nb_states)
+#         t_input = jnp.atleast_1d(t).astype(jnp.float32)
+#         theta_input = jnp.atleast_1d(theta)
+        
+#         h = jnp.concatenate([t_input, x_onehot]) if self.vanilla else jnp.concatenate([t_input, x_onehot, rho])
+            
+#         for i in range(self.depth):
+#             h = self.layers[i](h)
+            
+#             film_params = self.film_layers[i](theta_input)
+#             gamma, beta = jnp.split(film_params, 2)
+            
+#             # Apply FiLM
+#             h = h * (1.0 + gamma) + beta
+#             h = self.activation(h)
+            
+#         # Use the dedicated output layer instead of self.layers[5]
+#         logits = self.output_layer(h)
+#         return jax.nn.softmax(logits)
 
 class BayesianPolicyNN(eqx.Module):
     layers: list
-    film_layers: list  # New: Generators for gamma and beta
+    film_layers_1: list  # first linear of each FiLM MLP
+    film_layers_2: list  # second linear of each FiLM MLP
+    output_layer: eqx.nn.Linear
+    depth: int = eqx.static_field()
     nb_states: int = eqx.static_field()
     vanilla: bool = eqx.static_field()
     activation: callable = eqx.static_field()
 
-    def __init__(self, env, theta_dim=1, vanilla=False, key=None):
+    def __init__(self, env, theta_dim=1, depth=3, film_hidden=64,
+                 vanilla=False, key=None):
         if key is None:
             raise ValueError("key must be provided.")
-            
+
+        self.depth = depth
         self.nb_states = env.nb_states
         self.vanilla = vanilla
         self.activation = jax.nn.tanh
+
         nb_actions = env.nb_actions
         hidden_dim = 64
-        
-        # Base input dimension (no theta here, theta will modulate the hidden layers)
-        input_dim = 1 + self.nb_states if vanilla else 1 + self.nb_states + self.nb_states
-        
-        keys = jax.random.split(key, 12) # More keys for FiLM generators
-        
-        # 1. Main Policy Backbone
-        self.layers = [
-            eqx.nn.Linear(input_dim, hidden_dim, key=keys[0]),
-            eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[1]),
-            eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[2]),
-            eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[3]),
-            eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[4]),
-            eqx.nn.Linear(hidden_dim, nb_actions, key=keys[5])
-        ]
-        
-        # 2. FiLM Generators: Small networks that map theta to (gamma, beta)
-        # We create one generator for each hidden layer (total of 5)
-        self.film_layers = []
-        for i in range(5):
-            # Output is hidden_dim * 2 (one gamma and one beta per neuron)
-            self.film_layers.append(eqx.nn.Linear(theta_dim, hidden_dim * 2, key=keys[6+i]))
+        input_dim = 1 + self.nb_states if vanilla else 1 + 2 * self.nb_states
+
+        # Keys: depth backbone + 2*depth film + 1 output
+        keys = jax.random.split(key, depth + 2 * depth + 1)
+
+        # Backbone
+        self.layers = []
+        for i in range(depth):
+            in_d = input_dim if i == 0 else hidden_dim
+            self.layers.append(eqx.nn.Linear(in_d, hidden_dim, key=keys[i]))
+
+        self.output_layer = eqx.nn.Linear(hidden_dim, nb_actions, key=keys[depth])
+
+        # FiLM MLPs: theta_dim -> film_hidden -> hidden_dim*2
+        self.film_layers_1 = []
+        self.film_layers_2 = []
+        for i in range(depth):
+            k1, k2 = jax.random.split(keys[depth + 1 + 2 * i])
+            self.film_layers_1.append(eqx.nn.Linear(theta_dim,   film_hidden,    key=k1))
+            self.film_layers_2.append(eqx.nn.Linear(film_hidden,  hidden_dim * 2, key=k2))
 
     def __call__(self, t, x, rho, theta):
-        # 1. Prepare Inputs (Standard)
         x_onehot = jax.nn.one_hot(x, self.nb_states)
-        t_input = jnp.atleast_1d(t).astype(jnp.float32)
-        theta_input = jnp.atleast_1d(theta)
-        
-        if self.vanilla:
-            h = jnp.concatenate([t_input, x_onehot])
-        else:
-            h = jnp.concatenate([t_input, x_onehot, rho])
-            
-        # 2. Forward Pass with FiLM Modulation
-        for i in range(5):
-            # A. Standard Linear + Activation
-            h = self.layers[i](h)
-            
-            # B. FiLM Modulation: Generate Gamma and Beta from Theta
-            film_params = self.film_layers[i](theta_input)
-            gamma, beta = jnp.split(film_params, 2)
-            
-            # C. Apply Modulation: h = h * gamma + beta
-            # (Adding 1.0 to gamma makes it start near identity)
-            h = h * (1.0 + gamma) + beta
-            
-            # D. Activation
-            h = self.activation(h)
-            
-        # 3. Output
-        logits = self.layers[5](h)
-        return jax.nn.softmax(logits)
-    
+        t_input  = jnp.atleast_1d(t).astype(jnp.float32)
+        theta    = jnp.atleast_1d(theta)
 
+        h = jnp.concatenate([t_input, x_onehot]) if self.vanilla \
+            else jnp.concatenate([t_input, x_onehot, rho])
+
+        for i in range(self.depth):
+            h = self.layers[i](h)
+
+            # FiLM MLP: Linear -> tanh -> Linear, all on raw flat theta
+            film_h      = jax.nn.tanh(self.film_layers_1[i](theta))
+            film_params = self.film_layers_2[i](film_h)
+            gamma, beta = jnp.split(film_params, 2)
+
+            h = h * (1.0 + gamma) + beta
+            h = self.activation(h)
+
+        return jax.nn.softmax(self.output_layer(h))
 
 def train_best_response_fictitious_bayesian(
     env, 
@@ -550,7 +606,7 @@ def compute_agg_MF_bayesian_theta_fixed(env, rho0, pi, eps0, theta):
     def p_fixed(t, x, r):
         return pi(t, x, r, theta_vec)
 
-    generate_mean_field_scan(local_env, rho0, p_fixed, eps0)
+    return generate_mean_field_scan(local_env, rho0, p_fixed, eps0)
 
 
 def sample_rho(env,rho0, pi, key, N):
@@ -561,6 +617,17 @@ def sample_rho(env,rho0, pi, key, N):
         return rho_flat
     dataset = jax.vmap(get_single_trajectory)(eps0s)
     return dataset
+
+def sample_mu(env,rho0, pi, key, N):
+    eps0s = env.common_noise(key, (N, env.H)) # (N, H) 
+    def get_single_trajectory(eps0):
+        mu_mf = generate_mu_scan(env, rho0, pi, eps0)
+        mu_flat= mu_mf.reshape(-1)
+        return mu_flat
+    dataset = jax.vmap(get_single_trajectory)(eps0s)
+    return dataset
+
+
 
 def sample_theta_rho_bayesian(env,rho0, generate_theta, pi, key, N):
     """
@@ -588,6 +655,40 @@ def sample_theta_rho_bayesian(env,rho0, generate_theta, pi, key, N):
         
         # Flatten rho into a 1D vector: (H * nb_states,)
         rho_flat = rho_mf.reshape(-1)
+
+        return jnp.concatenate([theta_sample, rho_flat])
+
+    dataset = jax.vmap(get_single_trajectory)(thetas, eps0s)
+    
+    return dataset
+
+
+def sample_theta_mu_bayesian(env,rho0, generate_theta, pi, key, N):
+    """
+    Samples N pairs of (theta, rho) and concatenates them into a single dataset.
+    rho is the full mean field trajectory flattened into a vector.
+    
+    Returns:
+        Data: Array of shape (N, theta_dim + H * nb_states)
+    """
+    # 1. Split keys for theta and common noise
+    key_theta, key_noise = jax.random.split(key)
+    
+    # 2. Sample N thetas and N noise realizations
+    thetas = generate_theta(key_theta, N)  # (N, theta_dim)
+    eps0s = env.common_noise(key_noise, (N, env.H)) # (N, H)
+    
+    # 3. Define a function to get rho for a single (theta, eps) pair
+    def get_single_trajectory(theta_sample, eps0):
+        # Specialize the environment
+        local_env = env.set_theta(theta_sample)
+        
+        p_fixed = lambda t, x, r: pi(t, x, r, theta_sample)
+
+        mu_mf = generate_mu_scan(local_env, rho0, p_fixed, eps0)
+        
+        # Flatten rho into a 1D vector: (H * nb_states,)
+        rho_flat = mu_mf.reshape(-1)
 
         return jnp.concatenate([theta_sample, rho_flat])
 
@@ -660,7 +761,7 @@ class ConditionalMAF(eqx.Module):
             shift, log_scale = jnp.split(params, 2, axis=-1)
             
             # STABILITY: Clamp log_scale to prevent numerical explosion
-            log_scale = 3.0 * jnp.tanh(log_scale / 3.0) 
+            log_scale = 1 * jnp.tanh(log_scale / 3.0) 
             
             # Apply transformation
             y2 = x2 * jnp.exp(log_scale) + shift
@@ -701,13 +802,20 @@ class ConditionalMAF(eqx.Module):
         return jax.vmap(single_inverse)(z_samples)
     
 
+import jax
+import jax.numpy as jnp
+import optax
+import equinox as eqx
+
 def train_nle_online(
     env, 
     model, 
     rho0,
     generate_theta,
-    pi,  # The Bayesian BMA policy ensemble
-    n_steps=10000,   # Total number of gradient steps
+    pi, 
+    indices_I,        # [NEW] Time steps to include in training
+    use_mu=False,     # [NEW] Toggle: True uses sample_theta_mu, False uses rho
+    n_steps=10000,   
     lr=1e-4,         
     batch_size=128, 
     key=None
@@ -715,7 +823,6 @@ def train_nle_online(
     if key is None: key = jax.random.PRNGKey(0)
     
     # 1. Setup Optimizer & Partition
-    # Using a chain with gradient clipping for stability in 'Infinite Data' mode
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
         optax.adam(lr)
@@ -723,34 +830,42 @@ def train_nle_online(
     model_params, model_static = eqx.partition(model, eqx.is_array)
     opt_state = optimizer.init(model_params)
 
-    # Pre-calculate dimensions for slicing the concatenated dataset
     theta_dim = env.theta_dim
+    nb_states = env.nb_states
 
     # --- The Core Step: Generate + Train ---
     def train_step(carry, step_key):
         params, opt_s = carry
         
-        # 2. GENERATE FRESH DATA FOR THIS STEP
-        # This function runs N simulations in parallel via vmap
-        # Returns dataset of shape (batch_size, theta_dim + H * nb_states)
-        dataset = sample_theta_rho_bayesian(
-            env, rho0, generate_theta, pi, step_key, batch_size
-        )
+        # 2. DATA GENERATION LOGIC
+        if use_mu:
+            # Uses the expected density simulation
+            dataset = sample_theta_mu_bayesian(
+                env, rho0, generate_theta, pi, step_key, batch_size
+            )
+        else:
+            # Uses the stochastic realization simulation
+            dataset = sample_theta_rho_bayesian(
+                env, rho0, generate_theta, pi, step_key, batch_size
+            )
 
-        # 3. SLICE THE DATA
-        # Slicing out thetas and rhos from the concatenated batch
+        # 3. SLICE AND FILTER BY TIME STEPS
         thetas = dataset[:, :theta_dim]
-        rho_flat = dataset[:, theta_dim:]
+        full_traj = dataset[:, theta_dim:] # (batch, H * nb_states)
+        
+        # Reshape to (batch, H, nb_states) to slice the time dimension
+        traj_reshaped = full_traj.reshape(batch_size, -1, nb_states)
+        
+        # Filter based on the provided index list I
+        selected_traj = traj_reshaped[:, indices_I, :]
+        
+        # Flatten back to (batch, len(indices_I) * nb_states)
+        rho_flat = selected_traj.reshape(batch_size, -1)
 
         # 4. COMPUTE LOSS AND GRADIENT
         def loss_fn(p):
-            # Reassemble model to use log_prob
             m = eqx.combine(p, model_static)
-            
-            # vmap log_prob(rho, theta) across the batch
             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
-            
-            # Return negative log-likelihood (NLL)
             return -jnp.mean(log_p)
 
         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
@@ -764,13 +879,298 @@ def train_nle_online(
     # --- 6. Execution via lax.scan ---
     keys = jax.random.split(key, n_steps)
     
-    # This will compile the simulator AND the trainer into one optimized XLA graph.
-    # Expect a few minutes for the first compilation.
     (final_params, _), loss_history = jax.lax.scan(
         train_step, (model_params, opt_state), keys
     )
     
-    return eqx.combine(final_params, model_static), loss_history
+    return eqx.combine(final_params, model_static), loss_history    
+
+
+# #######################################################################"
+# # GOOOD"
+# def train_nle_online(
+#     env, 
+#     model, 
+#     rho0,
+#     generate_theta,
+#     pi,  # The Bayesian BMA policy ensemble
+#     n_steps=10000,   # Total number of gradient steps
+#     lr=1e-4,         
+#     batch_size=128, 
+#     key=None
+# ):
+#     if key is None: key = jax.random.PRNGKey(0)
+    
+#     # 1. Setup Optimizer & Partition
+#     # Using a chain with gradient clipping for stability in 'Infinite Data' mode
+#     optimizer = optax.chain(
+#         optax.clip_by_global_norm(1.0),
+#         optax.adam(lr)
+#     )
+#     model_params, model_static = eqx.partition(model, eqx.is_array)
+#     opt_state = optimizer.init(model_params)
+
+#     # Pre-calculate dimensions for slicing the concatenated dataset
+#     theta_dim = env.theta_dim
+
+#     # --- The Core Step: Generate + Train ---
+#     def train_step(carry, step_key):
+#         params, opt_s = carry
+        
+#         # 2. GENERATE FRESH DATA FOR THIS STEP
+#         # This function runs N simulations in parallel via vmap
+#         # Returns dataset of shape (batch_size, theta_dim + H * nb_states)
+#         dataset = sample_theta_rho_bayesian(
+#             env, rho0, generate_theta, pi, step_key, batch_size
+#         )
+
+#         # 3. SLICE THE DATA
+#         # Slicing out thetas and rhos from the concatenated batch
+#         thetas = dataset[:, :theta_dim]
+#         rho_flat = dataset[:, theta_dim:]
+#         rho_flat = rho_flat # + 1e-4 * jax.random.normal(step_key, rho_flat.shape)
+
+#         # 4. COMPUTE LOSS AND GRADIENT
+#         def loss_fn(p):
+#             # Reassemble model to use log_prob
+#             m = eqx.combine(p, model_static)
+            
+#             # vmap log_prob(rho, theta) across the batch
+#             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
+            
+#             # Return negative log-likelihood (NLL)
+#             return -jnp.mean(log_p)
+
+#         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
+        
+#         # 5. UPDATE
+#         updates, next_opt_s = optimizer.update(grads, opt_s, params)
+#         next_params = eqx.apply_updates(params, updates)
+        
+#         return (next_params, next_opt_s), loss_val
+
+#     # --- 6. Execution via lax.scan ---
+#     keys = jax.random.split(key, n_steps)
+    
+#     # This will compile the simulator AND the trainer into one optimized XLA graph.
+#     # Expect a few minutes for the first compilation.
+#     (final_params, _), loss_history = jax.lax.scan(
+#         train_step, (model_params, opt_state), keys
+#     )
+    
+#     return eqx.combine(final_params, model_static), loss_history
+#######################################################################"
+
+
+# def sample_theta_rho_bayesian(env, rho0, generate_theta, pi, key, N):
+#     key_theta, key_noise = jax.random.split(key)
+#     thetas = generate_theta(key_theta, N)           # (N, theta_dim)
+#     eps0s  = env.common_noise(key_noise, (N, env.H))  # (N, H, nb_states)
+
+#     def get_single_trajectory(theta_sample, eps0):
+#         local_env = env.set_theta(theta_sample)
+#         p_fixed   = lambda t, x, r: pi(t, x, r, theta_sample)
+#         rho_mf    = generate_mean_field_scan(local_env, rho0, p_fixed, eps0)
+#         # rho_mf shape: (H, nb_states). Drop t=0 — it's always rho0 (constant).
+#         rho_flat  = rho_mf[1:].reshape(-1)           # ((H-1)*nb_states,)
+#         return jnp.concatenate([theta_sample, rho_flat])
+
+#     return jax.vmap(get_single_trajectory)(thetas, eps0s)
+
+
+# def train_nle_online(env, model, rho0, generate_theta, pi,
+#                      n_steps=10_000, lr=1e-4, batch_size=128, key=None):
+#     if key is None: key = jax.random.PRNGKey(0)
+
+#     lr_scheduler = optax.cosine_decay_schedule(
+#         init_value=lr, 
+#         decay_steps=n_steps, 
+#         alpha=1e-2  # Final LR will be 1% of the initial LR (e.g., 1e-4 -> 1e-6)
+#     )
+#     optimizer = optax.chain(
+#         optax.clip_by_global_norm(1.0),
+#         optax.adam(learning_rate=lr_scheduler)
+#     )
+#     model_params, model_static = eqx.partition(model, eqx.is_array)
+#     opt_state = optimizer.init(model_params)
+
+
+#     # optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(lr))
+#     # model_params, model_static = eqx.partition(model, eqx.is_array)
+#     # opt_state  = optimizer.init(model_params)
+
+#     theta_dim  = env.theta_dim
+
+#     def train_step(carry, step_key):
+#         params, opt_s = carry
+
+#         # Returns (batch_size, theta_dim + (H-1)*nb_states)
+#         dataset  = sample_theta_rho_bayesian(env, rho0, generate_theta, pi, step_key, batch_size)
+#         thetas   = dataset[:, :theta_dim]
+#         rho_flat = dataset[:, theta_dim:]   # ((H-1)*nb_states,) per sample
+
+#         def loss_fn(p):
+#             m     = eqx.combine(p, model_static)
+#             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
+#             return -jnp.mean(log_p)
+
+#         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
+#         updates, next_opt_s = optimizer.update(grads, opt_s, params)
+#         return (eqx.apply_updates(params, updates), next_opt_s), loss_val
+
+#     keys = jax.random.split(key, n_steps)
+#     (final_params, _), loss_history = jax.lax.scan(
+#         train_step, (model_params, opt_state), keys
+#     )
+#     return eqx.combine(final_params, model_static), loss_history
+
+
+# class ConditionalMAF(eqx.Module):
+#     conditioners_l1: list
+#     conditioners_l2: list
+#     conditioners_l3: list
+#     theta_encoders: list      # ← dedicated per-layer theta encoder
+#     base_dist: distrax.Distribution = eqx.field(static=True)
+#     event_dim:   int = eqx.field(static=True)
+#     num_layers:  int = eqx.field(static=True)
+#     context_dim: int = eqx.field(static=True)
+#     nb_states:   int = eqx.field(static=True)
+#     theta_embed_dim: int = eqx.field(static=True)
+
+#     def __init__(self, event_dim, context_dim, hidden_dim, num_layers,
+#                  nb_states, key, theta_embed_dim=64):
+#         self.event_dim       = event_dim
+#         self.context_dim     = context_dim
+#         self.num_layers      = num_layers
+#         self.nb_states       = nb_states
+#         self.theta_embed_dim = theta_embed_dim
+
+#         self.base_dist = distrax.MultivariateNormalDiag(
+#             loc        = jnp.zeros(event_dim),
+#             scale_diag = jnp.ones(event_dim)
+#         )
+
+#         split = event_dim // 2
+#         # Keys: 3 conditioner layers + 1 theta encoder per coupling layer
+#         keys = jax.random.split(key, num_layers * 4)
+
+#         self.conditioners_l1 = []
+#         self.conditioners_l2 = []
+#         self.conditioners_l3 = []
+#         self.theta_encoders  = []
+
+#         # for i in range(num_layers):
+#         #     # Theta encoder: context_dim -> theta_embed_dim (same size as split)
+#         #     # This gives theta equal representation to x1 in the conditioner
+#         #     theta_enc = eqx.nn.Linear(context_dim, theta_embed_dim, key=keys[4*i])
+
+#         #     # Conditioner now takes x1 + theta_embedding (not raw theta)
+#         #     l1 = eqx.nn.Linear(split + theta_embed_dim, hidden_dim,              key=keys[4*i+1])
+#         #     l2 = eqx.nn.Linear(hidden_dim,              hidden_dim,              key=keys[4*i+2])
+#         #     l3 = eqx.nn.Linear(hidden_dim, (event_dim - split) * 2,             key=keys[4*i+3])
+
+#         #     # Zero-init output → identity initialisation
+#         #     l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
+#         #     l3 = eqx.tree_at(lambda l: l.bias,   l3, jnp.zeros_like(l3.bias))
+
+#         #     self.theta_encoders.append(theta_enc)
+#         #     self.conditioners_l1.append(l1)
+#         #     self.conditioners_l2.append(l2)
+#         #     self.conditioners_l3.append(l3)
+
+#         for i in range(num_layers):
+#             # Match the alternating split used in log_prob/sample
+#             split_i  = event_dim // 2 if i % 2 == 0 else event_dim - event_dim // 2
+#             output_i = event_dim - split_i
+
+#             theta_enc = eqx.nn.Linear(context_dim, theta_embed_dim,          key=keys[4*i])
+#             l1        = eqx.nn.Linear(split_i + theta_embed_dim, hidden_dim, key=keys[4*i+1])
+#             l2        = eqx.nn.Linear(hidden_dim, hidden_dim,                key=keys[4*i+2])
+#             l3        = eqx.nn.Linear(hidden_dim, output_i * 2,              key=keys[4*i+3])
+
+#             l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
+#             l3 = eqx.tree_at(lambda l: l.bias,   l3, jnp.zeros_like(l3.bias))
+
+#             self.theta_encoders.append(theta_enc)
+#             self.conditioners_l1.append(l1)
+#             self.conditioners_l2.append(l2)
+#             self.conditioners_l3.append(l3)
+
+#     def _conditioner(self, i, x1, theta):
+#         # Encode theta to theta_embed_dim before concatenating with x1
+#         theta_emb = jax.nn.tanh(self.theta_encoders[i](theta))   # (theta_embed_dim,)
+#         h = jax.nn.tanh(self.conditioners_l1[i](jnp.concatenate([x1, theta_emb])))
+#         h = jax.nn.tanh(self.conditioners_l2[i](h))
+#         return self.conditioners_l3[i](h)
+
+#     def log_prob(self, rho_flat, theta):
+#         theta = jnp.atleast_1d(theta)
+#         eps   = 1e-6
+
+#         # rho sums to 1 over nb_states, so values are O(1/nb_states)
+#         # Rescale to [eps, 1-eps] using known bounds
+#         nb_states  = self.nb_states
+#         # Soft rescale: map [0, 1] -> [eps, 1-eps] directly
+#         rho_clamped = jnp.clip(rho_flat, eps, 1.0 - eps)
+
+#         # Instead of logit, use a softer preprocessing:
+#         # standardise each timestep block so values are better conditioned
+#         rho_blocks = rho_clamped.reshape(-1, nb_states)          # (H-1, nb_states)
+#         # Standardise per timestep (zero mean, unit std)
+#         mean = rho_blocks.mean(axis=-1, keepdims=True)
+#         std  = rho_blocks.std(axis=-1, keepdims=True) + eps
+#         x    = ((rho_blocks - mean) / std).reshape(-1)           # (event_dim,)
+
+#         # No logit log-det needed — standardisation is not a bijection we track
+#         # Instead learn directly on standardised data with no log-det correction
+#         total_log_det = 0.0
+        
+#         # Add log-det of the standardisation (treating mean/std as fixed constants)
+#         # -sum(log(std)) per timestep
+#         total_log_det = -jnp.sum(jnp.log(std))
+
+#         split = self.event_dim // 2
+#         for i in range(self.num_layers):
+#             split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
+#             x1, x2           = x[:split_i], x[split_i:]
+#             params            = self._conditioner(i, x1, theta)
+#             shift, log_scale  = jnp.split(params, 2, axis=-1)
+#             log_scale         = 3.0 * jnp.tanh(log_scale / 3.0)
+#             y2                = x2 * jnp.exp(log_scale) + shift
+#             total_log_det    += jnp.sum(log_scale)
+#             x                 = jnp.concatenate([x1, y2], axis=-1)[::-1]
+
+        
+
+#         return self.base_dist.log_prob(x) + total_log_det
+
+#     def sample(self, theta, rho0, key, num_samples=1):
+#         theta     = jnp.atleast_1d(theta)
+#         z_samples = self.base_dist.sample(seed=key, sample_shape=(num_samples,))
+#         nb_states = self.nb_states
+#         eps       = 1e-6
+
+#         def single_inverse(z):
+#             x = z
+#             for i in reversed(range(self.num_layers)):
+#                 x                = x[::-1]
+#                 split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
+#                 x1, x2           = x[:split_i], x[split_i:]
+#                 params            = self._conditioner(i, x1, theta)
+#                 shift, log_scale  = jnp.split(params, 2, axis=-1)
+#                 log_scale         = 3.0 * jnp.tanh(log_scale / 3.0)
+#                 original_x2       = (x2 - shift) * jnp.exp(-log_scale)
+#                 x                 = jnp.concatenate([x1, original_x2], axis=-1)
+
+#             # Inverse standardisation: we don't have the original mean/std,
+#             # so use softmax per timestep block to enforce simplex constraint
+#             x_blocks  = x.reshape(-1, nb_states)                 # (H-1, nb_states)
+#             rho_blocks = jax.nn.softmax(x_blocks, axis=-1)        # enforce simplex per timestep
+#             return rho_blocks.reshape(-1)                         # (event_dim,)
+
+#         samples    = jax.vmap(single_inverse)(z_samples)          # (num_samples, event_dim)
+#         rho0_tiled = jnp.tile(rho0, (num_samples, 1))
+        # return jnp.concatenate([rho0_tiled, samples], axis=-1)
 
 
 
@@ -1132,6 +1532,21 @@ def compute_reward_bma_vs_deterministic(
     return jnp.mean(final_bays), jnp.mean(final_det)
 
 
+def ensemble_log_prob(models, rho_flat, thetas_grid):
+    all_log_probs = []
+    
+    for m in models:
+        lp, _, _ = compute_likelihood_uniform_prior(thetas_grid, rho_flat, m)
+        all_log_probs.append(lp)
+
+    log_probs_stack = jnp.stack(all_log_probs)
+    mean_log = jnp.mean(log_probs_stack, axis = 0)
+    log_like = mean_log - mean_log.max()
+    map_idx = jnp.argmax(log_like)
+    theta_MAP = thetas_grid[map_idx]
+    return log_like, theta_MAP
+
+
 def first_experiment(config, seed):
     config['seed'] = seed
     # Setup Saving Path
@@ -1154,7 +1569,7 @@ def first_experiment(config, seed):
     H=config['H'],
     eta=config['eta'],
     alpha_cong=1,
-    alpha_dist= 1,
+    alpha_dist= 1/config['NB_STATES'],
     bar_threshold=1
     )
 
@@ -1189,30 +1604,10 @@ def first_experiment(config, seed):
                                                                   key = k_br_nash_bays)
     results['gap_nash_bays'] = gap_nash_bays
 
-    model_flow = ConditionalMAF(
-    event_dim=config['H']*config['NB_STATES'], 
-    context_dim=1, 
-    hidden_dim=256, 
-    num_layers=5, 
-    key=k_flow
-    )
-
-    model_flow, loss_flow = train_nle_online(env_Theta,
-        model=model_flow,
-        rho0=rho0, 
-        generate_theta=generate_theta,
-        pi=pi_nash_bays,
-        n_steps=config['epochs_flow'],
-        lr=config['lr_flow'],
-        batch_size=config['batch_size_flow'],
-        key=k_train_flow
-    )
-    #SAVE loss_flow
-    results['loss_flow'] = loss_flow
-
     # Modification: Dictionary for eval_results
     eval_results = {}
-    for theta_true in jnp.linspace(0, 2, 5):
+    pi_nash_theta_dic = {}
+    for theta_true in jnp.linspace(0.5, 2, 5):
         theta_key = float(theta_true)
         theta_data = {}
         env_true = env_Theta.set_theta(jnp.array([theta_true]))
@@ -1232,6 +1627,7 @@ def first_experiment(config, seed):
         pi_nash_theta, loss_nash_theta = learn_fictitious_policy(env_true, rho0, fictitious_ensemble_theta, 
                                                                  config['epochs_nash'], config['batch_size_nash'], config['lr_nash'], 
                                                                  key = k_nash)
+        pi_nash_theta_dic[theta_true] = pi_nash_theta
         #SAVE loss_nash_theta
         theta_data['loss_nash_theta'] = loss_nash_theta
 
@@ -1240,65 +1636,347 @@ def first_experiment(config, seed):
                                                                   mc_size= config['size_mc'], nb_batch_mc=config['nb_batch_mc'], 
                                                                   lr = config['lr_fic'], batch_size=config['batch_size_fic'], 
                                                                   key = k_br_nash_theta)
-        results['gap_nash_theta'] = gap_nash_theta
+        theta_data['gap_nash_theta'] = gap_nash_theta
 
-        n_samples_data = {}
-        for N in [1, 10, 100]:
-            n_data = {}
-            samples = sample_rho(env_true,rho0,pi_nash_theta, k_samples, N)
-            thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
-            log_like, likelihood, theta_map = compute_likelihood_uniform_prior(thetas_grid, samples, model_flow)
-            #SAVE log_like, theta_map
-            n_data['log_like'] = log_like
-            n_data['theta_map'] = theta_map
+    n_samples_data = {}
 
-            br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
-            env_true, rho0, pi_nash_bays, theta_map, 
-            n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
-            key=k_br_map
-            )
+    list_indices = [jnp.arange(config['H']-1, 0, -1)[::-1], jnp.arange(config['H']-1, 0, -2, )[::-1], jnp.arange(config['H']-1, 0, -4)[::-1], [config['H'] - 1]]
 
-            gap_map, rew_map = compute_exploitability_bayesian_fixed_theta(env_true, rho0, pi_nash_bays, br_to_map, theta_map, 
-                                                                                    k_gap_map,
-                                                                                    config['size_mc'], config['nb_batch_mc'])
-            #SAVE gap_map, rew_map
-            n_data['gap_map'] = gap_map
-            n_data['rew_map'] = rew_map
+    use_mu = {'rho': False, 'mu':True }
+    for obs in use_mu: 
+        for indices_I in list_indices:
+            num_models = 5
+            ensemble_keys = jax.random.split(k_flow, num_models)
+            ensemble_flows = []
+            ensemble_flows_losses = []
 
-            rew_map_vs_nash_true, rew_det_true_map = compute_reward_bays_theta_fixed_vs_determinist(env_true, rho0, pi_nash_bays, pi_nash_theta, theta_map, 
-                                                                                    config['size_mc'], config['nb_batch_mc'], 
-                                                                                    key = k_rew_map)
-            #SAVE rew_map_vs_nash_true, rew_det_true_map
-            n_data['rew_map_vs_nash_true'] = rew_map_vs_nash_true
-            n_data['rew_det_true_map'] = rew_det_true_map
+            for i in range(num_models):
+                print(f"--- Training Model {i+1}/{num_models} ---")
+                
+                # Initialize a new model
+                m_key, train_key = jax.random.split(ensemble_keys[i])
+                model = ConditionalMAF(
+                    event_dim=len(indices_I)*config(['NB_STATES']), 
+                    context_dim=1, 
+                    hidden_dim=256, 
+                    num_layers=5, 
+                    key=m_key
+                )
+                
+                # Train (using your existing online training function)
+                trained_model, losses = train_nle_online(env_Theta,
+                model=model,
+                rho0=rho0, 
+                generate_theta=generate_theta,
+                pi=pi_nash_bays,
+                indices_I=indices_I,
+                use_mu=use_mu[obs],
+                n_steps=config['epochs_flow'],
+                lr=config['lr_flow'],
+                batch_size=config['batch_size_flow'],
+                key=train_key
+                )
 
-            br_to_bma, _ = train_best_response_vs_bma(
-            env_true, rho0, pi_nash_bays, thetas_grid, likelihood,
-            n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
-            key=k_br_bma
-            )
+                ensemble_flows.append(trained_model)
+                ensemble_flows_losses.append(losses)
+
+                #SAVE loss_flow
+                results['loss_flow'] = ensemble_flows_losses
+
+            for N in [1, 10, 100]:
+                n_data = {}
+                if use_mu[obs]:
+                    samples = sample_mu(env_true,rho0,pi_nash_theta, k_samples, N)
+                else :
+                    samples = sample_mu(env_true,rho0,pi_nash_theta, k_samples, N)
+
+                samples = samples.reshape(samples.shape[0], -1, env_Theta.nb_states)
+                samples = samples[:, indices_I, :]
+                samples = samples.reshape(samples.shape[0], -1)
+
+                thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
+                log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
+                likelihood = jnp.exp(log_like)
+
+                #SAVE log_like, theta_map
+                n_data['log_like'] = log_like
+                n_data['theta_map'] = theta_MAP
+
+                br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
+                env_true, rho0, pi_nash_bays, theta_MAP, 
+                n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
+                key=k_br_map
+                )
+
+                gap_map, rew_map = compute_exploitability_bayesian_fixed_theta(env_true, rho0, pi_nash_bays, br_to_map, theta_MAP, 
+                                                                                        k_gap_map,
+                                                                                        config['size_mc'], config['nb_batch_mc'])
+                #SAVE gap_map, rew_map
+                n_data['gap_map'] = gap_map
+                n_data['rew_map'] = rew_map
+
+                rew_map_vs_nash_true, rew_det_true_map = compute_reward_bays_theta_fixed_vs_determinist(env_true, rho0, pi_nash_bays, pi_nash_theta, theta_MAP, 
+                                                                                        config['size_mc'], config['nb_batch_mc'], 
+                                                                                        key = k_rew_map)
+                #SAVE rew_map_vs_nash_true, rew_det_true_map
+                n_data['rew_map_vs_nash_true'] = rew_map_vs_nash_true
+                n_data['rew_det_true_map'] = rew_det_true_map
+
+                br_to_bma, _ = train_best_response_vs_bma(
+                env_true, rho0, pi_nash_bays, thetas_grid, likelihood,
+                n_iterations= config['epochs_fic'], lr=config['lr_fic'],batch_size=config['batch_size_fic'],
+                key=k_br_bma
+                )
+                
+                gap_bma, rew_bma = compute_exploitability_bma(env_true, rho0, pi_nash_bays, br_to_bma, thetas_grid, likelihood, 
+                                                                                        k_gap_bma,
+                                                                                        config['size_mc'], config['nb_batch_mc'])
+                #SAVE gap_bma, rew_bma
+                n_data['gap_bma'] = gap_bma
+                n_data['rew_bma'] = rew_bma
+
+                rew_bma_vs_nash_true, rew_det_true_bma = compute_reward_bma_vs_deterministic(env_true, rho0, pi_nash_bays, pi_nash_theta, thetas_grid, likelihood, 
+                                                                                            key = k_rew_bma,
+                                                                                            mc_size=config['size_mc'], nb_batch_mc= config['nb_batch_mc'], 
+                                                                                            )
+                #SAVE rew_bma_vs_nash_true, rew_det_true_bma
+                n_data['rew_bma_vs_nash_true'] = rew_bma_vs_nash_true
+                n_data['rew_det_true_bma'] = rew_det_true_bma
+                
+                n_samples_data[N] = n_data # Dict by N
             
-            gap_bma, rew_bma = compute_exploitability_bma(env_true, rho0, pi_nash_bays, br_to_bma, thetas_grid, likelihood, 
-                                                                                    k_gap_bma,
-                                                                                    config['size_mc'], config['nb_batch_mc'])
-            #SAVE gap_bma, rew_bma
-            n_data['gap_bma'] = gap_bma
-            n_data['rew_bma'] = rew_bma
+            theta_data['n_samples_evals'] = n_samples_data
+            eval_results[theta_key] = theta_data # Dict by theta
 
-            rew_bma_vs_nash_true, rew_det_true_bma = compute_reward_bma_vs_deterministic(env_true, rho0, pi_nash_bays, pi_nash_theta, thetas_grid, likelihood, 
-                                                                                        key = k_rew_bma,
-                                                                                        mc_size=config['size_mc'], nb_batch_mc= config['nb_batch_mc'], 
-                                                                                        )
-            #SAVE rew_bma_vs_nash_true, rew_det_true_bma
-            n_data['rew_bma_vs_nash_true'] = rew_bma_vs_nash_true
-            n_data['rew_det_true_bma'] = rew_det_true_bma
-            
-            n_samples_data[N] = n_data # Dict by N
-        
-        theta_data['n_samples_evals'] = n_samples_data
-        eval_results[theta_key] = theta_data # Dict by theta
-
-    results['evaluations'] = eval_results
+            results['evaluations'] = eval_results
     
+    with open(file_path, 'wb') as f:
+        pickle.dump(results, f)
+
+
+
+def first_experiment(config, seed):
+    config['seed'] = seed
+    folder = config['folder_name']
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+    file_path = os.path.join(folder, f"eta={config['eta']}_seed={config['seed']}.pkl")
+    
+    results = {"config": config}
+
+    KEY = jax.random.PRNGKey(config['seed'])
+    k_pi0_bays, k_fic_bays, k_nash_bays, k_br_nash_bays, k_flow, k_train_flow, k_pi0, k_fic, k_nash, k_br_nash_theta, k_samples, k_br_map, k_gap_map, k_rew_map, k_br_bma, k_gap_bma, k_rew_bma = jax.random.split(KEY, 17)
+
+    rho0 = jnp.ones(config['NB_STATES']) / config['NB_STATES']
+    env_Theta = BeachBarEnv(
+        generate_common_noise=vector_torus_uniform_displaced,
+        rho0=rho0,
+        nb_states=config['NB_STATES'],
+        H=config['H'],
+        eta=config['eta'],
+        alpha_cong=1,
+        alpha_dist=1 / config['NB_STATES'],
+        bar_threshold=1
+    )
+
+    generate_theta = lambda k, b: generate_uniform(k, b, theta_dim=1, low=config['theta_low'], high=config['theta_high'])
+
+    # ── Bayesian Fictitious Play ──────────────────────────────────────────────
+    pi0_bays = BayesianPolicyNN(env_Theta, key=k_pi0_bays)
+    fictitious_ensemble_bays, nash_gaps_fic_bays = run_fictitious_play_recursive_bayesian(
+        env_Theta,
+        K_steps=config['K_bays'], initial_policy=pi0_bays,
+        rho0=rho0, generate_theta=generate_theta,
+        n_train_iters=config['epochs_fic_bays'],
+        batch_size_train=config['batch_size_fic_bays'],
+        size_mc=config['size_mc'], nb_batch_mc=config['nb_batch_mc'],
+        lr=config['lr_fic_bays'], plot_report=False, key=k_fic_bays
+    )
+    results['nash_gaps_fic_bays'] = nash_gaps_fic_bays
+
+    pi_nash_bays, loss_nash_bays = learn_fictitious_policy_bayesian(
+        env_Theta, rho0, fictitious_ensemble_bays, generate_theta,
+        config['epochs_nash_bays'], config['batch_size_nash_bays'], config['lr_nash_bays'],
+        k_nash_bays
+    )
+    results['loss_nash_bays'] = loss_nash_bays
+
+    gap_nash_bays, _ = compute_single_policy_exploitability_bayesian(
+        env_Theta, rho0, pi_nash_bays, generate_theta,
+        n_iterations=config['epochs_fic_bays'],
+        mc_size=config['size_mc'], nb_batch_mc=config['nb_batch_mc'],
+        lr=config['lr_fic_bays'], batch_size=config['batch_size_fic_bays'],
+        key=k_br_nash_bays
+    )
+    results['gap_nash_bays'] = gap_nash_bays
+
+    # ── Deterministic Nash per theta ──────────────────────────────────────────
+    pi_nash_theta_dic = {}
+    det_results = {}
+    for theta_true in jnp.linspace(0.5, 2, 5):
+        theta_key = float(theta_true)
+        theta_data = {}
+        env_true = env_Theta.set_theta(jnp.array([theta_true]))
+        pi0 = PolicyNN(env_true, key=k_pi0)
+
+        fictitious_ensemble_theta, nash_gaps_fic_theta = run_fictitious_play_recursive(
+            env_true, config['K'], pi0, rho0,
+            n_train_iters=config['epochs_fic'],
+            batch_size_train=config['batch_size_fic'],
+            size_mc=config['size_mc'], nb_batch_mc=config['nb_batch_mc'],
+            lr=config['lr_fic'], plot_report=False, key=k_fic
+        )
+        theta_data['nash_gaps_fic_theta'] = nash_gaps_fic_theta
+
+        pi_nash_theta, loss_nash_theta = learn_fictitious_policy(
+            env_true, rho0, fictitious_ensemble_theta,
+            config['epochs_nash'], config['batch_size_nash'], config['lr_nash'],
+            key=k_nash
+        )
+        pi_nash_theta_dic[theta_key] = pi_nash_theta
+        theta_data['loss_nash_theta'] = loss_nash_theta
+
+        gap_nash_theta, _ = compute_single_policy_exploitability(
+            env_true, rho0, pi_nash_theta,
+            n_iterations=config['epochs_fic'],
+            mc_size=config['size_mc'], nb_batch_mc=config['nb_batch_mc'],
+            lr=config['lr_fic'], batch_size=config['batch_size_fic'],
+            key=k_br_nash_theta
+        )
+        theta_data['gap_nash_theta'] = gap_nash_theta
+        det_results[theta_key] = theta_data
+
+    results['det_results'] = det_results
+
+    # ── Flow ensemble × obs type × indices ───────────────────────────────────
+    list_indices = [
+        list(range(1, config['H'])),                    # all timesteps
+        list(range(1, config['H'], 2)),                 # every 2
+        list(range(1, config['H'], 4)),                 # every 4
+        [config['H'] - 1],                              # last only
+    ]
+    use_mu_map = {'rho': False, 'mu': True}
+
+    flow_results = {}   # keyed by (obs, indices_key)
+
+    for obs, do_mu in use_mu_map.items():
+        for indices_I in list_indices:
+            indices_key = str(indices_I)
+            print(f"\n=== obs={obs}, indices={indices_I} ===")
+
+            event_dim = len(indices_I) * config['NB_STATES']  # ← fixed brackets
+
+            # Train ensemble of flows
+            num_models = 5
+            ensemble_keys = jax.random.split(k_flow, num_models)
+            ensemble_flows = []
+            ensemble_flows_losses = []
+
+            for i in range(num_models):
+                print(f"  Flow {i+1}/{num_models}")
+                m_key, train_key = jax.random.split(ensemble_keys[i])
+                model = ConditionalMAF(
+                    event_dim=event_dim,
+                    context_dim=1,
+                    hidden_dim=256,
+                    num_layers=5,
+                    key=m_key
+                )
+                trained_model, losses = train_nle_online(
+                    env_Theta,
+                    model=model,
+                    rho0=rho0,
+                    generate_theta=generate_theta,
+                    pi=pi_nash_bays,
+                    indices_I=indices_I,
+                    use_mu=do_mu,
+                    n_steps=config['epochs_flow'],
+                    lr=config['lr_flow'],
+                    batch_size=config['batch_size_flow'],
+                    key=train_key
+                )
+                ensemble_flows.append(trained_model)
+                ensemble_flows_losses.append(losses)
+
+            # Eval: per theta_true × N
+            obs_indices_results = {}
+            for theta_true in jnp.linspace(0.5, 2, 5):
+                theta_key = float(theta_true)
+                env_true = env_Theta.set_theta(jnp.array([theta_true]))
+                pi_nash_theta = pi_nash_theta_dic[theta_key]   # ← from pre-computed dict
+
+                n_samples_data = {}
+                for N in [1, 10, 100]:
+                    n_data = {}
+
+                    # Sample observations — branch on obs type
+                    if do_mu:
+                        samples = sample_mu(env_true, rho0, pi_nash_theta, k_samples, N)
+                    else:
+                        samples = sample_rho(env_true, rho0, pi_nash_theta, k_samples, N)
+
+                    # Slice to selected indices
+                    samples = samples.reshape(N, -1, env_Theta.nb_states)
+                    samples = samples[:, indices_I, :]
+                    samples = samples.reshape(N, -1)
+
+                    thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
+                    log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
+                    likelihood = jnp.exp(log_like)
+
+                    n_data['log_like']  = log_like
+                    n_data['theta_map'] = theta_MAP
+
+                    br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
+                        env_true, rho0, pi_nash_bays, theta_MAP,
+                        n_iterations=config['epochs_fic'], lr=config['lr_fic'],
+                        batch_size=config['batch_size_fic'], key=k_br_map
+                    )
+                    gap_map, rew_map = compute_exploitability_bayesian_fixed_theta(
+                        env_true, rho0, pi_nash_bays, br_to_map, theta_MAP,
+                        k_gap_map, config['size_mc'], config['nb_batch_mc']
+                    )
+                    n_data['gap_map'] = gap_map
+                    n_data['rew_map'] = rew_map
+
+                    rew_map_vs_nash_true, rew_det_true_map = compute_reward_bays_theta_fixed_vs_determinist(
+                        env_true, rho0, pi_nash_bays, pi_nash_theta, theta_MAP,
+                        config['size_mc'], config['nb_batch_mc'], key=k_rew_map
+                    )
+                    n_data['rew_map_vs_nash_true'] = rew_map_vs_nash_true
+                    n_data['rew_det_true_map']     = rew_det_true_map
+
+                    br_to_bma, _ = train_best_response_vs_bma(
+                        env_true, rho0, pi_nash_bays, thetas_grid, likelihood,
+                        n_iterations=config['epochs_fic'], lr=config['lr_fic'],
+                        batch_size=config['batch_size_fic'], key=k_br_bma
+                    )
+                    gap_bma, rew_bma = compute_exploitability_bma(
+                        env_true, rho0, pi_nash_bays, br_to_bma, thetas_grid, likelihood,
+                        k_gap_bma, config['size_mc'], config['nb_batch_mc']
+                    )
+                    n_data['gap_bma'] = gap_bma
+                    n_data['rew_bma'] = rew_bma
+
+                    rew_bma_vs_nash_true, rew_det_true_bma = compute_reward_bma_vs_deterministic(
+                        env_true, rho0, pi_nash_bays, pi_nash_theta, thetas_grid, likelihood,
+                        key=k_rew_bma, mc_size=config['size_mc'], nb_batch_mc=config['nb_batch_mc']
+                    )
+                    n_data['rew_bma_vs_nash_true'] = rew_bma_vs_nash_true
+                    n_data['rew_det_true_bma']     = rew_det_true_bma
+
+                    n_samples_data[N] = n_data
+
+                obs_indices_results[theta_key] = {
+                    'n_samples_evals': n_samples_data
+                }
+
+            flow_results[(obs, indices_key)] = {
+                'losses':  ensemble_flows_losses,
+                'evals':   obs_indices_results,
+            }
+
+    results['flow_results'] = flow_results
+
     with open(file_path, 'wb') as f:
         pickle.dump(results, f)
