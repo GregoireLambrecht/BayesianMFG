@@ -1851,8 +1851,8 @@ def first_experiment(config, seed):
     # ── Flow ensemble × obs type × indices ───────────────────────────────────
     list_indices = [
         list(range(1, config['H'])),                    # all timesteps
-        list(range(1, config['H'], 2)),                 # every 2
-        list(range(1, config['H'], 4)),                 # every 4
+        list(range(1, config['H'], 2)) + [config['H']-1],                 # every 2
+        list(range(3, config['H'], 4)) + [config['H']-1],                 # every 4
         [config['H'] - 1],                              # last only
     ]
     use_mu_map = {'rho': False, 'mu': True}
@@ -1864,7 +1864,7 @@ def first_experiment(config, seed):
             indices_key = str(indices_I)
             print(f"\n=== obs={obs}, indices={indices_I} ===")
 
-            event_dim = len(indices_I) * config['NB_STATES']  # ← fixed brackets
+            event_dim = len(indices_I) * config['NB_STATES']  
 
             # Train ensemble of flows
             num_models = 5
