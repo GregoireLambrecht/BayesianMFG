@@ -628,6 +628,17 @@ def sample_mu(env,rho0, pi, key, N):
     dataset = jax.vmap(get_single_trajectory)(eps0s)
     return dataset
 
+def filter_samples(env, samples, indices_I,use_mu = False):
+    if use_mu: 
+        samples_reshaped = samples.reshape(samples.shape[0], -1, env.nb_states, env.nb_actions)
+        samples_filtered = samples_reshaped[:, indices_I, :]
+        samples = samples_filtered.reshape(samples.shape[0], -1)
+    else :
+        samples_reshaped = samples.reshape(samples.shape[0], -1, env.nb_states)
+        samples_filtered = samples_reshaped[:, indices_I, :]
+        samples = samples_filtered.reshape(samples.shape[0], -1)
+    return samples
+
 
 
 def sample_theta_rho_bayesian(env,rho0, generate_theta, pi, key, N):
@@ -699,114 +710,255 @@ def sample_theta_mu_bayesian(env,rho0, generate_theta, pi, key, N):
 
 
 
-class ConditionalMAF(eqx.Module):
-    conditioners: list 
-    base_dist: distrax.Distribution = eqx.field(static=True)
-    event_dim: int = eqx.field(static=True)
-    num_layers: int = eqx.field(static=True)
-    context_dim: int = eqx.field(static=True)
+# class ConditionalMAF(eqx.Module):
+#     conditioners: list 
+#     base_dist: distrax.Distribution = eqx.field(static=True)
+#     event_dim: int = eqx.field(static=True)
+#     num_layers: int = eqx.field(static=True)
+#     context_dim: int = eqx.field(static=True)
 
-    def __init__(self, event_dim, context_dim, hidden_dim, num_layers, key):
-        self.event_dim = event_dim
-        self.context_dim = context_dim
-        self.num_layers = num_layers
+#     def __init__(self, event_dim, context_dim, hidden_dim, num_layers, key):
+#         self.event_dim = event_dim
+#         self.context_dim = context_dim
+#         self.num_layers = num_layers
         
-        # Base distribution is a simple Standard Normal
+#         # Base distribution is a simple Standard Normal
+#         self.base_dist = distrax.MultivariateNormalDiag(
+#             loc=jnp.zeros(event_dim), 
+#             scale_diag=jnp.ones(event_dim)
+#         )
+        
+#         split = event_dim // 2
+#         keys = jax.random.split(key, num_layers)
+#         self.conditioners = []
+        
+#         for i in range(num_layers):
+#             # Define MLP layers
+#             l1 = eqx.nn.Linear(split + context_dim, hidden_dim, key=keys[i])
+#             l2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=jax.random.split(keys[i])[0])
+#             l3 = eqx.nn.Linear(hidden_dim, (event_dim - split) * 2, key=jax.random.split(keys[i])[1])
+            
+#             # STABILITY: Zero-init the final layer so the flow starts as Identity
+#             l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
+#             l3 = eqx.tree_at(lambda l: l.bias, l3, jnp.zeros_like(l3.bias))
+            
+#             # Use eqx.nn.Lambda to wrap jax.nn.tanh for Sequential compatibility
+#             conditioner = eqx.nn.Sequential([
+#                 l1, eqx.nn.Lambda(jax.nn.tanh),
+#                 l2, eqx.nn.Lambda(jax.nn.tanh),
+#                 l3
+#             ])
+#             self.conditioners.append(conditioner)
+
+#     def log_prob(self, rho_flat, theta):
+#         """Calculates log P(rho | theta)"""
+#         # 1. PRE-PROCESS: Logit Transform for [0, 1] bounded data
+#         eps = 1e-6
+#         rho_clamped = jnp.clip(rho_flat, eps, 1.0 - eps)
+#         x = jnp.log(rho_clamped / (1.0 - rho_clamped))
+        
+#         # Log-det for the logit transform
+#         # Change of variables: log(dy/dx) = log(1/x + 1/(1-x))
+#         logit_log_det = jnp.sum(-jnp.log(rho_clamped) - jnp.log(1.0 - rho_clamped))
+        
+#         total_log_det = logit_log_det
+#         split = self.event_dim // 2
+
+#         # 2. FORWARD PASS: Flow through Coupling Layers
+#         for i in range(self.num_layers):
+#             x1, x2 = x[:split], x[split:]
+            
+#             # Conditioner sees half the trajectory and the environment parameter theta
+#             params = self.conditioners[i](jnp.concatenate([x1, theta], axis=-1))
+#             shift, log_scale = jnp.split(params, 2, axis=-1)
+            
+#             # STABILITY: Clamp log_scale to prevent numerical explosion
+#             log_scale = 1 * jnp.tanh(log_scale / 3.0) 
+            
+#             # Apply transformation
+#             y2 = x2 * jnp.exp(log_scale) + shift
+#             total_log_det += jnp.sum(log_scale)
+            
+#             # Combine and Permute (Reverse) for the next layer
+#             x = jnp.concatenate([x1, y2], axis=-1)[::-1]
+            
+#         return self.base_dist.log_prob(x) + total_log_det
+
+#     def sample(self, theta, key, num_samples=1):
+#         """Generates rho ~ P(rho | theta)"""
+#         # 1. Sample from Gaussian base distribution
+#         z_samples = self.base_dist.sample(seed=key, sample_shape=(num_samples,))
+#         split = self.event_dim // 2
+
+#         def single_inverse(z):
+#             x = z
+#             # 2. INVERSE PASS: Go backwards through the flow
+#             for i in reversed(range(self.num_layers)):
+#                 # Undo Permutation (Reverse is its own inverse)
+#                 x = x[::-1]
+                
+#                 x1, x2 = x[:split], x[split:]
+#                 params = self.conditioners[i](jnp.concatenate([x1, theta], axis=-1))
+#                 shift, log_scale = jnp.split(params, 2, axis=-1)
+                
+#                 # Apply the same tanh clamp used in forward
+#                 log_scale = 3.0 * jnp.tanh(log_scale / 3.0)
+                
+#                 # Inverse: x = (y - shift) * exp(-log_scale)
+#                 original_x2 = (x2 - shift) * jnp.exp(-log_scale)
+#                 x = jnp.concatenate([x1, original_x2], axis=-1)
+            
+#             # 3. POST-PROCESS: Inverse Logit (Sigmoid) to return to [0, 1]
+#             return jax.nn.sigmoid(x)
+            
+#         return jax.vmap(single_inverse)(z_samples)
+    
+class ConditionalMAF(eqx.Module):
+    conditioners_l1: list
+    conditioners_l2: list
+    conditioners_l3: list
+    theta_encoders: list      
+    base_dist: distrax.Distribution = eqx.field(static=True)
+    event_dim:      int  = eqx.field(static=True)
+    num_layers:     int  = eqx.field(static=True)
+    context_dim:    int  = eqx.field(static=True)
+    nb_states:      int  = eqx.field(static=True)
+    theta_embed_dim: int = eqx.field(static=True)
+    use_simplex:    bool = eqx.field(static=True)  # ← new flag
+
+    def __init__(self, event_dim, context_dim, hidden_dim, num_layers,
+                 nb_states, key, theta_embed_dim=64, use_simplex=True):
+        self.event_dim        = event_dim
+        self.context_dim      = context_dim
+        self.num_layers       = num_layers
+        self.nb_states        = nb_states
+        self.theta_embed_dim  = theta_embed_dim
+        self.use_simplex      = use_simplex   # True for mu, False for rho
+
         self.base_dist = distrax.MultivariateNormalDiag(
-            loc=jnp.zeros(event_dim), 
-            scale_diag=jnp.ones(event_dim)
+            loc        = jnp.zeros(event_dim),
+            scale_diag = jnp.ones(event_dim)
         )
-        
-        split = event_dim // 2
-        keys = jax.random.split(key, num_layers)
-        self.conditioners = []
-        
+
+        keys = jax.random.split(key, num_layers * 4)
+        self.conditioners_l1 = []
+        self.conditioners_l2 = []
+        self.conditioners_l3 = []
+        self.theta_encoders  = []
+
         for i in range(num_layers):
-            # Define MLP layers
-            l1 = eqx.nn.Linear(split + context_dim, hidden_dim, key=keys[i])
-            l2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=jax.random.split(keys[i])[0])
-            l3 = eqx.nn.Linear(hidden_dim, (event_dim - split) * 2, key=jax.random.split(keys[i])[1])
-            
-            # STABILITY: Zero-init the final layer so the flow starts as Identity
+            split_i  = event_dim // 2 if i % 2 == 0 else event_dim - event_dim // 2
+            output_i = event_dim - split_i
+
+            theta_enc = eqx.nn.Linear(context_dim, theta_embed_dim, key=keys[4*i])
+            l1 = eqx.nn.Linear(split_i + theta_embed_dim, hidden_dim, key=keys[4*i+1])
+            l2 = eqx.nn.Linear(hidden_dim, hidden_dim,               key=keys[4*i+2])
+            l3 = eqx.nn.Linear(hidden_dim, output_i * 2,             key=keys[4*i+3])
+
             l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
-            l3 = eqx.tree_at(lambda l: l.bias, l3, jnp.zeros_like(l3.bias))
-            
-            # Use eqx.nn.Lambda to wrap jax.nn.tanh for Sequential compatibility
-            conditioner = eqx.nn.Sequential([
-                l1, eqx.nn.Lambda(jax.nn.tanh),
-                l2, eqx.nn.Lambda(jax.nn.tanh),
-                l3
-            ])
-            self.conditioners.append(conditioner)
+            l3 = eqx.tree_at(lambda l: l.bias,   l3, jnp.zeros_like(l3.bias))
+
+            self.theta_encoders.append(theta_enc)
+            self.conditioners_l1.append(l1)
+            self.conditioners_l2.append(l2)
+            self.conditioners_l3.append(l3)
+
+    def _conditioner(self, i, x1, theta):
+        theta_emb = jax.nn.tanh(self.theta_encoders[i](theta))
+        h = jax.nn.tanh(self.conditioners_l1[i](jnp.concatenate([x1, theta_emb])))
+        h = jax.nn.tanh(self.conditioners_l2[i](h))
+        return self.conditioners_l3[i](h)
+
+    def _preprocess(self, rho_flat):
+        """Simplex -> R^n  (forward, with log-det)"""
+        eps = 1e-6
+        if self.use_simplex:
+            # Centered log transform — preserves simplex structure
+            # log-det: -sum(log(rho)) - nb_states * log(mean) per block (approx const, ignored)
+            rho_blocks = rho_flat.reshape(-1, self.nb_states)
+            log_rho    = jnp.log(jnp.clip(rho_blocks, eps, 1.0))
+            x          = (log_rho - jnp.mean(log_rho, axis=-1, keepdims=True)).reshape(-1)
+            # Log-det of centered log transform
+            log_det    = jnp.sum(-jnp.log(jnp.clip(rho_flat, eps, 1.0)))
+        else:
+            # Logit transform — for independent [0,1] variables
+            rho_c   = jnp.clip(rho_flat, eps, 1.0 - eps)
+            x       = jnp.log(rho_c / (1.0 - rho_c))
+            log_det = jnp.sum(-jnp.log(rho_c) - jnp.log(1.0 - rho_c))
+        return x, log_det
+
+    def _postprocess(self, x):
+        """R^n -> Simplex (inverse)"""
+        if self.use_simplex:
+            x_blocks   = x.reshape(-1, self.nb_states)
+            rho_blocks = jax.nn.softmax(x_blocks, axis=-1)
+            return rho_blocks.reshape(-1)
+        else:
+            return jax.nn.sigmoid(x)
 
     def log_prob(self, rho_flat, theta):
-        """Calculates log P(rho | theta)"""
-        # 1. PRE-PROCESS: Logit Transform for [0, 1] bounded data
-        eps = 1e-6
-        rho_clamped = jnp.clip(rho_flat, eps, 1.0 - eps)
-        x = jnp.log(rho_clamped / (1.0 - rho_clamped))
-        
-        # Log-det for the logit transform
-        # Change of variables: log(dy/dx) = log(1/x + 1/(1-x))
-        logit_log_det = jnp.sum(-jnp.log(rho_clamped) - jnp.log(1.0 - rho_clamped))
-        
-        total_log_det = logit_log_det
-        split = self.event_dim // 2
+        theta = jnp.atleast_1d(theta)
+        x, total_log_det = self._preprocess(rho_flat)
 
-        # 2. FORWARD PASS: Flow through Coupling Layers
         for i in range(self.num_layers):
-            x1, x2 = x[:split], x[split:]
-            
-            # Conditioner sees half the trajectory and the environment parameter theta
-            params = self.conditioners[i](jnp.concatenate([x1, theta], axis=-1))
-            shift, log_scale = jnp.split(params, 2, axis=-1)
-            
-            # STABILITY: Clamp log_scale to prevent numerical explosion
-            log_scale = 1 * jnp.tanh(log_scale / 3.0) 
-            
-            # Apply transformation
-            y2 = x2 * jnp.exp(log_scale) + shift
-            total_log_det += jnp.sum(log_scale)
-            
-            # Combine and Permute (Reverse) for the next layer
-            x = jnp.concatenate([x1, y2], axis=-1)[::-1]
-            
+            split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
+            x1, x2           = x[:split_i], x[split_i:]
+            params            = self._conditioner(i, x1, theta)
+            shift, log_scale  = jnp.split(params, 2, axis=-1)
+            log_scale         = 1 * jnp.tanh(log_scale / 3.0)
+            y2                = x2 * jnp.exp(log_scale) + shift
+            total_log_det    += jnp.sum(log_scale)
+            x                 = jnp.concatenate([x1, y2], axis=-1)[::-1]
+
         return self.base_dist.log_prob(x) + total_log_det
 
-    def sample(self, theta, key, num_samples=1):
-        """Generates rho ~ P(rho | theta)"""
-        # 1. Sample from Gaussian base distribution
+    def sample(self, theta, rho0, key, num_samples=1):
+        theta     = jnp.atleast_1d(theta)
         z_samples = self.base_dist.sample(seed=key, sample_shape=(num_samples,))
-        split = self.event_dim // 2
 
         def single_inverse(z):
             x = z
-            # 2. INVERSE PASS: Go backwards through the flow
             for i in reversed(range(self.num_layers)):
-                # Undo Permutation (Reverse is its own inverse)
-                x = x[::-1]
-                
-                x1, x2 = x[:split], x[split:]
-                params = self.conditioners[i](jnp.concatenate([x1, theta], axis=-1))
-                shift, log_scale = jnp.split(params, 2, axis=-1)
-                
-                # Apply the same tanh clamp used in forward
-                log_scale = 3.0 * jnp.tanh(log_scale / 3.0)
-                
-                # Inverse: x = (y - shift) * exp(-log_scale)
-                original_x2 = (x2 - shift) * jnp.exp(-log_scale)
-                x = jnp.concatenate([x1, original_x2], axis=-1)
-            
-            # 3. POST-PROCESS: Inverse Logit (Sigmoid) to return to [0, 1]
-            return jax.nn.sigmoid(x)
-            
-        return jax.vmap(single_inverse)(z_samples)
+                x                = x[::-1]
+                split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
+                x1, x2           = x[:split_i], x[split_i:]
+                params            = self._conditioner(i, x1, theta)
+                shift, log_scale  = jnp.split(params, 2, axis=-1)
+                log_scale         = 1 * jnp.tanh(log_scale / 3.0)
+                original_x2       = (x2 - shift) * jnp.exp(-log_scale)
+                x                 = jnp.concatenate([x1, original_x2], axis=-1)
+            return self._postprocess(x)
+
+        samples    = jax.vmap(single_inverse)(z_samples)
+        rho0_tiled = jnp.tile(rho0, (num_samples, 1))
+        return jnp.concatenate([rho0_tiled, samples], axis=-1)
     
 
-import jax
-import jax.numpy as jnp
-import optax
-import equinox as eqx
+def apply_simplex_noise(key, rho_flat, nb_states, strength=1):
+    """
+    Perturbs probability distributions on the simplex using Dirichlet noise.
+    
+    rho_flat: (batch, num_indices * nb_states)
+    nb_states: dimensionality of the simplex (S or S*A)
+    epsilon_strength: how much to weight the noise (higher = more perturbation)
+    """
+    batch_size = rho_flat.shape[0]
+    # Reshape to (batch, num_time_steps, nb_states)
+    rho_blocks = rho_flat.reshape(batch_size, -1, nb_states)
+    
+    # 1. Sample Dirichlet(1, ..., 1) for each block
+    # alpha=1 makes it a uniform distribution over the simplex
+    noise_key, _ = jax.random.split(key)
+    epsilon = jax.random.dirichlet(noise_key, strength*jnp.ones(nb_states), shape=(batch_size, rho_blocks.shape[1]))
+    
+    rho_perturbed = rho_blocks * epsilon
+    
+    # 3. Renormalize over the state dimension
+    rho_perturbed = rho_perturbed / jnp.sum(rho_perturbed, axis=-1, keepdims=True)
+    
+    return rho_perturbed.reshape(batch_size, -1)
+
+
 
 def train_nle_online(
     env, 
@@ -832,7 +984,6 @@ def train_nle_online(
     opt_state = optimizer.init(model_params)
 
     theta_dim = env.theta_dim
-    nb_states = env.nb_states
 
     # --- The Core Step: Generate + Train ---
     def train_step(carry, step_key):
@@ -844,30 +995,38 @@ def train_nle_online(
             dataset = sample_theta_mu_bayesian(
                 env, rho0, generate_theta, pi, step_key, batch_size
             )
+            # 3. SLICE AND FILTER BY TIME STEPS
+            thetas = dataset[:, :theta_dim]
+            full_traj = dataset[:, theta_dim:] # (batch, H * nb_states)
+            
+            rho_flat = filter_samples(env, full_traj, indices_I, use_mu)
+            dim_xi = env.nb_states*env.nb_actions
+            rho_flat = apply_simplex_noise(key, rho_flat,dim_xi, strength=np.sqrt(dim_xi))
+            # print(rho_flat.shape)
         else:
             # Uses the stochastic realization simulation
             dataset = sample_theta_rho_bayesian(
                 env, rho0, generate_theta, pi, step_key, batch_size
             )
-
-        # 3. SLICE AND FILTER BY TIME STEPS
-        thetas = dataset[:, :theta_dim]
-        full_traj = dataset[:, theta_dim:] # (batch, H * nb_states)
-        
-        # Reshape to (batch, H, nb_states) to slice the time dimension
-        traj_reshaped = full_traj.reshape(batch_size, -1, nb_states)
-        
-        # Filter based on the provided index list I
-        selected_traj = traj_reshaped[:, indices_I, :]
-        
-        # Flatten back to (batch, len(indices_I) * nb_states)
-        rho_flat = selected_traj.reshape(batch_size, -1)
+            # 3. SLICE AND FILTER BY TIME STEPS
+            thetas = dataset[:, :theta_dim]
+            full_traj = dataset[:, theta_dim:] # (batch, H * nb_states)
+            
+            rho_flat = filter_samples(env, full_traj, indices_I, use_mu)
 
         # 4. COMPUTE LOSS AND GRADIENT
         def loss_fn(p):
             m = eqx.combine(p, model_static)
             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
-            return -jnp.mean(log_p)
+
+            # 1. Standard Negative Log Likelihood
+            nll = -jnp.mean(log_p)
+            # 2. LASSO / L1 Penalty (Encourages Sparsity)
+            # We apply it to the conditioners to find the most important features
+            # l1_sum = sum(jnp.sum(jnp.abs(l.weight)) for l in model.conditioners_l1)
+            # 3. Combined Loss
+            return nll 
+            # return -jnp.mean(log_p)
 
         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
         
@@ -885,294 +1044,6 @@ def train_nle_online(
     )
     
     return eqx.combine(final_params, model_static), loss_history    
-
-
-# #######################################################################"
-# # GOOOD"
-# def train_nle_online(
-#     env, 
-#     model, 
-#     rho0,
-#     generate_theta,
-#     pi,  # The Bayesian BMA policy ensemble
-#     n_steps=10000,   # Total number of gradient steps
-#     lr=1e-4,         
-#     batch_size=128, 
-#     key=None
-# ):
-#     if key is None: key = jax.random.PRNGKey(0)
-    
-#     # 1. Setup Optimizer & Partition
-#     # Using a chain with gradient clipping for stability in 'Infinite Data' mode
-#     optimizer = optax.chain(
-#         optax.clip_by_global_norm(1.0),
-#         optax.adam(lr)
-#     )
-#     model_params, model_static = eqx.partition(model, eqx.is_array)
-#     opt_state = optimizer.init(model_params)
-
-#     # Pre-calculate dimensions for slicing the concatenated dataset
-#     theta_dim = env.theta_dim
-
-#     # --- The Core Step: Generate + Train ---
-#     def train_step(carry, step_key):
-#         params, opt_s = carry
-        
-#         # 2. GENERATE FRESH DATA FOR THIS STEP
-#         # This function runs N simulations in parallel via vmap
-#         # Returns dataset of shape (batch_size, theta_dim + H * nb_states)
-#         dataset = sample_theta_rho_bayesian(
-#             env, rho0, generate_theta, pi, step_key, batch_size
-#         )
-
-#         # 3. SLICE THE DATA
-#         # Slicing out thetas and rhos from the concatenated batch
-#         thetas = dataset[:, :theta_dim]
-#         rho_flat = dataset[:, theta_dim:]
-#         rho_flat = rho_flat # + 1e-4 * jax.random.normal(step_key, rho_flat.shape)
-
-#         # 4. COMPUTE LOSS AND GRADIENT
-#         def loss_fn(p):
-#             # Reassemble model to use log_prob
-#             m = eqx.combine(p, model_static)
-            
-#             # vmap log_prob(rho, theta) across the batch
-#             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
-            
-#             # Return negative log-likelihood (NLL)
-#             return -jnp.mean(log_p)
-
-#         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
-        
-#         # 5. UPDATE
-#         updates, next_opt_s = optimizer.update(grads, opt_s, params)
-#         next_params = eqx.apply_updates(params, updates)
-        
-#         return (next_params, next_opt_s), loss_val
-
-#     # --- 6. Execution via lax.scan ---
-#     keys = jax.random.split(key, n_steps)
-    
-#     # This will compile the simulator AND the trainer into one optimized XLA graph.
-#     # Expect a few minutes for the first compilation.
-#     (final_params, _), loss_history = jax.lax.scan(
-#         train_step, (model_params, opt_state), keys
-#     )
-    
-#     return eqx.combine(final_params, model_static), loss_history
-#######################################################################"
-
-
-# def sample_theta_rho_bayesian(env, rho0, generate_theta, pi, key, N):
-#     key_theta, key_noise = jax.random.split(key)
-#     thetas = generate_theta(key_theta, N)           # (N, theta_dim)
-#     eps0s  = env.common_noise(key_noise, (N, env.H))  # (N, H, nb_states)
-
-#     def get_single_trajectory(theta_sample, eps0):
-#         local_env = env.set_theta(theta_sample)
-#         p_fixed   = lambda t, x, r: pi(t, x, r, theta_sample)
-#         rho_mf    = generate_mean_field_scan(local_env, rho0, p_fixed, eps0)
-#         # rho_mf shape: (H, nb_states). Drop t=0 — it's always rho0 (constant).
-#         rho_flat  = rho_mf[1:].reshape(-1)           # ((H-1)*nb_states,)
-#         return jnp.concatenate([theta_sample, rho_flat])
-
-#     return jax.vmap(get_single_trajectory)(thetas, eps0s)
-
-
-# def train_nle_online(env, model, rho0, generate_theta, pi,
-#                      n_steps=10_000, lr=1e-4, batch_size=128, key=None):
-#     if key is None: key = jax.random.PRNGKey(0)
-
-#     lr_scheduler = optax.cosine_decay_schedule(
-#         init_value=lr, 
-#         decay_steps=n_steps, 
-#         alpha=1e-2  # Final LR will be 1% of the initial LR (e.g., 1e-4 -> 1e-6)
-#     )
-#     optimizer = optax.chain(
-#         optax.clip_by_global_norm(1.0),
-#         optax.adam(learning_rate=lr_scheduler)
-#     )
-#     model_params, model_static = eqx.partition(model, eqx.is_array)
-#     opt_state = optimizer.init(model_params)
-
-
-#     # optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(lr))
-#     # model_params, model_static = eqx.partition(model, eqx.is_array)
-#     # opt_state  = optimizer.init(model_params)
-
-#     theta_dim  = env.theta_dim
-
-#     def train_step(carry, step_key):
-#         params, opt_s = carry
-
-#         # Returns (batch_size, theta_dim + (H-1)*nb_states)
-#         dataset  = sample_theta_rho_bayesian(env, rho0, generate_theta, pi, step_key, batch_size)
-#         thetas   = dataset[:, :theta_dim]
-#         rho_flat = dataset[:, theta_dim:]   # ((H-1)*nb_states,) per sample
-
-#         def loss_fn(p):
-#             m     = eqx.combine(p, model_static)
-#             log_p = jax.vmap(m.log_prob)(rho_flat, thetas)
-#             return -jnp.mean(log_p)
-
-#         loss_val, grads = eqx.filter_value_and_grad(loss_fn)(params)
-#         updates, next_opt_s = optimizer.update(grads, opt_s, params)
-#         return (eqx.apply_updates(params, updates), next_opt_s), loss_val
-
-#     keys = jax.random.split(key, n_steps)
-#     (final_params, _), loss_history = jax.lax.scan(
-#         train_step, (model_params, opt_state), keys
-#     )
-#     return eqx.combine(final_params, model_static), loss_history
-
-
-# class ConditionalMAF(eqx.Module):
-#     conditioners_l1: list
-#     conditioners_l2: list
-#     conditioners_l3: list
-#     theta_encoders: list      # ← dedicated per-layer theta encoder
-#     base_dist: distrax.Distribution = eqx.field(static=True)
-#     event_dim:   int = eqx.field(static=True)
-#     num_layers:  int = eqx.field(static=True)
-#     context_dim: int = eqx.field(static=True)
-#     nb_states:   int = eqx.field(static=True)
-#     theta_embed_dim: int = eqx.field(static=True)
-
-#     def __init__(self, event_dim, context_dim, hidden_dim, num_layers,
-#                  nb_states, key, theta_embed_dim=64):
-#         self.event_dim       = event_dim
-#         self.context_dim     = context_dim
-#         self.num_layers      = num_layers
-#         self.nb_states       = nb_states
-#         self.theta_embed_dim = theta_embed_dim
-
-#         self.base_dist = distrax.MultivariateNormalDiag(
-#             loc        = jnp.zeros(event_dim),
-#             scale_diag = jnp.ones(event_dim)
-#         )
-
-#         split = event_dim // 2
-#         # Keys: 3 conditioner layers + 1 theta encoder per coupling layer
-#         keys = jax.random.split(key, num_layers * 4)
-
-#         self.conditioners_l1 = []
-#         self.conditioners_l2 = []
-#         self.conditioners_l3 = []
-#         self.theta_encoders  = []
-
-#         # for i in range(num_layers):
-#         #     # Theta encoder: context_dim -> theta_embed_dim (same size as split)
-#         #     # This gives theta equal representation to x1 in the conditioner
-#         #     theta_enc = eqx.nn.Linear(context_dim, theta_embed_dim, key=keys[4*i])
-
-#         #     # Conditioner now takes x1 + theta_embedding (not raw theta)
-#         #     l1 = eqx.nn.Linear(split + theta_embed_dim, hidden_dim,              key=keys[4*i+1])
-#         #     l2 = eqx.nn.Linear(hidden_dim,              hidden_dim,              key=keys[4*i+2])
-#         #     l3 = eqx.nn.Linear(hidden_dim, (event_dim - split) * 2,             key=keys[4*i+3])
-
-#         #     # Zero-init output → identity initialisation
-#         #     l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
-#         #     l3 = eqx.tree_at(lambda l: l.bias,   l3, jnp.zeros_like(l3.bias))
-
-#         #     self.theta_encoders.append(theta_enc)
-#         #     self.conditioners_l1.append(l1)
-#         #     self.conditioners_l2.append(l2)
-#         #     self.conditioners_l3.append(l3)
-
-#         for i in range(num_layers):
-#             # Match the alternating split used in log_prob/sample
-#             split_i  = event_dim // 2 if i % 2 == 0 else event_dim - event_dim // 2
-#             output_i = event_dim - split_i
-
-#             theta_enc = eqx.nn.Linear(context_dim, theta_embed_dim,          key=keys[4*i])
-#             l1        = eqx.nn.Linear(split_i + theta_embed_dim, hidden_dim, key=keys[4*i+1])
-#             l2        = eqx.nn.Linear(hidden_dim, hidden_dim,                key=keys[4*i+2])
-#             l3        = eqx.nn.Linear(hidden_dim, output_i * 2,              key=keys[4*i+3])
-
-#             l3 = eqx.tree_at(lambda l: l.weight, l3, jnp.zeros_like(l3.weight))
-#             l3 = eqx.tree_at(lambda l: l.bias,   l3, jnp.zeros_like(l3.bias))
-
-#             self.theta_encoders.append(theta_enc)
-#             self.conditioners_l1.append(l1)
-#             self.conditioners_l2.append(l2)
-#             self.conditioners_l3.append(l3)
-
-#     def _conditioner(self, i, x1, theta):
-#         # Encode theta to theta_embed_dim before concatenating with x1
-#         theta_emb = jax.nn.tanh(self.theta_encoders[i](theta))   # (theta_embed_dim,)
-#         h = jax.nn.tanh(self.conditioners_l1[i](jnp.concatenate([x1, theta_emb])))
-#         h = jax.nn.tanh(self.conditioners_l2[i](h))
-#         return self.conditioners_l3[i](h)
-
-#     def log_prob(self, rho_flat, theta):
-#         theta = jnp.atleast_1d(theta)
-#         eps   = 1e-6
-
-#         # rho sums to 1 over nb_states, so values are O(1/nb_states)
-#         # Rescale to [eps, 1-eps] using known bounds
-#         nb_states  = self.nb_states
-#         # Soft rescale: map [0, 1] -> [eps, 1-eps] directly
-#         rho_clamped = jnp.clip(rho_flat, eps, 1.0 - eps)
-
-#         # Instead of logit, use a softer preprocessing:
-#         # standardise each timestep block so values are better conditioned
-#         rho_blocks = rho_clamped.reshape(-1, nb_states)          # (H-1, nb_states)
-#         # Standardise per timestep (zero mean, unit std)
-#         mean = rho_blocks.mean(axis=-1, keepdims=True)
-#         std  = rho_blocks.std(axis=-1, keepdims=True) + eps
-#         x    = ((rho_blocks - mean) / std).reshape(-1)           # (event_dim,)
-
-#         # No logit log-det needed — standardisation is not a bijection we track
-#         # Instead learn directly on standardised data with no log-det correction
-#         total_log_det = 0.0
-        
-#         # Add log-det of the standardisation (treating mean/std as fixed constants)
-#         # -sum(log(std)) per timestep
-#         total_log_det = -jnp.sum(jnp.log(std))
-
-#         split = self.event_dim // 2
-#         for i in range(self.num_layers):
-#             split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
-#             x1, x2           = x[:split_i], x[split_i:]
-#             params            = self._conditioner(i, x1, theta)
-#             shift, log_scale  = jnp.split(params, 2, axis=-1)
-#             log_scale         = 3.0 * jnp.tanh(log_scale / 3.0)
-#             y2                = x2 * jnp.exp(log_scale) + shift
-#             total_log_det    += jnp.sum(log_scale)
-#             x                 = jnp.concatenate([x1, y2], axis=-1)[::-1]
-
-        
-
-#         return self.base_dist.log_prob(x) + total_log_det
-
-#     def sample(self, theta, rho0, key, num_samples=1):
-#         theta     = jnp.atleast_1d(theta)
-#         z_samples = self.base_dist.sample(seed=key, sample_shape=(num_samples,))
-#         nb_states = self.nb_states
-#         eps       = 1e-6
-
-#         def single_inverse(z):
-#             x = z
-#             for i in reversed(range(self.num_layers)):
-#                 x                = x[::-1]
-#                 split_i          = self.event_dim // 2 if i % 2 == 0 else self.event_dim - self.event_dim // 2
-#                 x1, x2           = x[:split_i], x[split_i:]
-#                 params            = self._conditioner(i, x1, theta)
-#                 shift, log_scale  = jnp.split(params, 2, axis=-1)
-#                 log_scale         = 3.0 * jnp.tanh(log_scale / 3.0)
-#                 original_x2       = (x2 - shift) * jnp.exp(-log_scale)
-#                 x                 = jnp.concatenate([x1, original_x2], axis=-1)
-
-#             # Inverse standardisation: we don't have the original mean/std,
-#             # so use softmax per timestep block to enforce simplex constraint
-#             x_blocks  = x.reshape(-1, nb_states)                 # (H-1, nb_states)
-#             rho_blocks = jax.nn.softmax(x_blocks, axis=-1)        # enforce simplex per timestep
-#             return rho_blocks.reshape(-1)                         # (event_dim,)
-
-#         samples    = jax.vmap(single_inverse)(z_samples)          # (num_samples, event_dim)
-#         rho0_tiled = jnp.tile(rho0, (num_samples, 1))
-        # return jnp.concatenate([rho0_tiled, samples], axis=-1)
-
 
 
 
@@ -1677,7 +1548,13 @@ def first_experiment(config, seed):
         for indices_I in list_indices:
             combo_idx += 1
             indices_key = str(indices_I)
-            event_dim = len(indices_I) * config['NB_STATES']
+            if do_mu: 
+                dim_xi = env_Theta.nb_action * config['NB_STATES']
+                hidden_dim = 256
+            else: 
+                dim_xi = config['NB_STATES']
+                hidden_dim = 128
+            event_dim = len(indices_I) * dim_xi
             print(f"\n[seed={seed}] === Combo {combo_idx}/{total_combos}: obs={obs}, |I|={len(indices_I)}, event_dim={event_dim} ===", flush=True)
 
             num_models = 5
@@ -1689,13 +1566,17 @@ def first_experiment(config, seed):
                 print(f"[seed={seed}]   Training flow {i+1}/{num_models}...", flush=True)
                 t0 = time.time()
                 m_key, train_key = jax.random.split(ensemble_keys[i])
+
                 model = ConditionalMAF(
                     event_dim=event_dim,
                     context_dim=1,
-                    hidden_dim=256,
+                    nb_states=dim_xi,
+                    hidden_dim=hidden_dim,
                     num_layers=5,
-                    key=m_key
+                    key=m_key,
+                    use_simplex=do_mu
                 )
+
                 trained_model, losses = train_nle_online(
                     env_Theta,
                     model=model,
@@ -1740,7 +1621,7 @@ def first_experiment(config, seed):
                     likelihood = jnp.exp(log_like)
                     n_data['log_like']  = log_like
                     n_data['theta_map'] = theta_MAP
-                    print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})", flush=True)
+                    # print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})", flush=True)
 
                     br_to_map, _ = train_best_response_vs_bayesian_theta_fixed(
                         env_true, rho0, pi_nash_bays, theta_MAP,

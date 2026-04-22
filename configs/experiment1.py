@@ -152,8 +152,8 @@ SMALL = {
     
     # Normalizing Flow (NLE)
     'epochs_flow': 25_000,
-    'batch_size_flow': 128,
-    'lr_flow': 1e-3,
+    'batch_size_flow': 256,
+    'lr_flow': 1e-5,
     
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 10,
@@ -164,7 +164,7 @@ SMALL = {
     # Nash Policy Learning (Deterministic)
     'epochs_nash': 50_000,
     'batch_size_nash': 128,
-    'lr_nash': 5e-4
+    'lr_nash': 1e-4
 }
 
 
