@@ -1612,9 +1612,7 @@ def first_experiment(config, seed):
                     else:
                         samples = sample_rho(env_true, rho0, pi_nash_theta, k_samples, N)
 
-                    samples = samples.reshape(N, -1, env_Theta.nb_states)
-                    samples = samples[:, indices_I, :]
-                    samples = samples.reshape(N, -1)
+                    samples = filter_samples(env_true, samples, indices_I, use_mu=do_mu)
 
                     thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
                     log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
@@ -1683,3 +1681,16 @@ def first_experiment(config, seed):
 
 
 
+def ensemble_log_prob(models, rho_flat, thetas_grid):
+    all_log_probs = []
+    
+    for m in models:
+        lp, _, _ = compute_likelihood_uniform_prior(thetas_grid, rho_flat, m)
+        all_log_probs.append(lp)
+
+    log_probs_stack = jnp.stack(all_log_probs)
+    mean_log = jnp.mean(log_probs_stack, axis = 0)
+    log_like = mean_log - mean_log.max()
+    map_idx = jnp.argmax(log_like)
+    theta_MAP = thetas_grid[map_idx]
+    return log_like, theta_MAP
