@@ -1549,7 +1549,7 @@ def first_experiment(config, seed):
             combo_idx += 1
             indices_key = str(indices_I)
             if do_mu: 
-                dim_xi = env_Theta.nb_action * config['NB_STATES']
+                dim_xi = env_Theta.nb_actions * config['NB_STATES']
                 hidden_dim = 256
             else: 
                 dim_xi = config['NB_STATES']
