@@ -152,7 +152,7 @@ class BayesianPolicyNN(eqx.Module):
     vanilla: bool = eqx.static_field()
     activation: callable = eqx.static_field()
 
-    def __init__(self, env, theta_dim=1, depth=3, film_hidden=64,
+    def __init__(self, env,  depth=3, film_hidden=64,
                  vanilla=False, key=None):
         if key is None:
             raise ValueError("key must be provided.")
@@ -182,7 +182,7 @@ class BayesianPolicyNN(eqx.Module):
         self.film_layers_2 = []
         for i in range(depth):
             k1, k2 = jax.random.split(keys[depth + 1 + 2 * i])
-            self.film_layers_1.append(eqx.nn.Linear(theta_dim,   film_hidden,    key=k1))
+            self.film_layers_1.append(eqx.nn.Linear(env.theta_dim,   film_hidden,    key=k1))
             self.film_layers_2.append(eqx.nn.Linear(film_hidden,  hidden_dim * 2, key=k2))
 
     def __call__(self, t, x, rho, theta):
@@ -214,14 +214,16 @@ def train_best_response_fictitious_bayesian(
     n_iterations=100, 
     lr=1e-3, 
     batch_size=32, 
-    key=None
+    key=None, 
+    model_type = BayesianPolicyNN
 ):
     if key is None: key = jax.random.PRNGKey(0)
     key, model_key = jax.random.split(key)
 
     # 1. Learner uses the Augmented State (Physical + Theta)
     # env.theta_dim is the dimension of the parameter vector theta
-    model = BayesianPolicyNN(env, theta_dim=env.theta_dim, key=model_key)
+    # model = BayesianPolicyNN(env, theta_dim=env.theta_dim, key=model_key)
+    model = model_type(env, key=model_key)
     # optimizer = optax.adam(lr)
     lr_scheduler = optax.cosine_decay_schedule(
         init_value=lr, 
@@ -288,8 +290,8 @@ def train_best_response_fictitious_bayesian(
             # 3. YOUR PROPOSED NORMALIZATION
             # We use subtraction (Advantage) or division (Ratio). 
             # Subtraction is usually more stable for gradients.
-            return (v_learner - v_history_mean) # Maximize the 'Gap'
-            return compute_total_reward(local_env, rho_ag, pi_theta, rho_mf)
+            # return (v_learner - v_history_mean) # Maximize the 'Gap'
+            return v_learner
 
         # Vectorize the entire logic across the batch of universes
         # in_axes=(0, 0, 0) corresponds to (rho_init, eps0, theta)
@@ -410,7 +412,8 @@ def run_fictitious_play_recursive_bayesian(
     nb_batch_mc=10,
     lr=1e-3,
     key=jax.random.PRNGKey(0),
-    plot_report=False
+    plot_report=False, 
+    model_type = BayesianPolicyNN
 ):
     policy_history = [initial_policy]
     nash_gaps = []
@@ -431,7 +434,8 @@ def run_fictitious_play_recursive_bayesian(
             n_iterations=n_train_iters,
             lr=lr,
             batch_size=batch_size_train,
-            key=train_key
+            key=train_key, 
+            model_type=model_type
         )
         
         if plot_report:
@@ -472,6 +476,7 @@ def learn_fictitious_policy_bayesian(
     batch_size, 
     lr, 
     key=None, 
+    model_type = BayesianPolicyNN
 ):
     """
     Learns a single BayesianPolicyNN that mimics the average behavior 
@@ -481,7 +486,7 @@ def learn_fictitious_policy_bayesian(
     key, model_key = jax.random.split(key)
 
     # 1. Initialize the Bayesian learner (augmented state: x + theta)
-    learner = BayesianPolicyNN(env, theta_dim=env.theta_dim, key=model_key)
+    learner = model_type(env, key=model_key)
     
     # optimizer = optax.adam(lr)
     
