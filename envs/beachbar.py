@@ -53,7 +53,7 @@ class BeachBarEnv(eqx.Module):
         # Generates the noise vector for the whole state space
         return self.generate_common_noise(key, batch_size, self.nb_states, self.eta)
 
-    def dynamics(self, x, a,eps, eps0):
+    def dynamics(self, x, a, eps, eps0):
         """Standard periodic dynamics for Beach Bar."""
         # eps_c_vec is (NB_STATES,)
         return (x + a + eps + eps0[x]) % self.nb_states
