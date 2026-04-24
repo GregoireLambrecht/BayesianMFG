@@ -1621,7 +1621,7 @@ def first_experiment(config, seed):
 
                     thetas_grid = jnp.linspace(config['theta_low'], config['theta_high'], 500).reshape(-1, 1)
                     log_like, theta_MAP = ensemble_log_prob(ensemble_flows, samples, thetas_grid)
-                    likelihood = jnp.exp(log_like)
+                    likelihood = jnp.exp(log_like)/jnp.exp(log_like).sum()
                     n_data['log_like']  = log_like
                     n_data['theta_map'] = theta_MAP
                     # print(f"[seed={seed}]       theta_MAP={float(theta_MAP):.4f} (true={theta_key:.3f})", flush=True)
