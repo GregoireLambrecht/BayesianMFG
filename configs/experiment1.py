@@ -153,7 +153,7 @@ SMALL = {
     # Normalizing Flow (NLE)
     'epochs_flow': 25_000,
     'batch_size_flow': 256,
-    'lr_flow': 1e-5,
+    'lr_flow': 1e-3,
     
     # Standard Fictitious Play (Deterministic Baselines)
     'K': 10,
